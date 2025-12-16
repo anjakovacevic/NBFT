@@ -96,31 +96,35 @@ def plot_nbft_trace(trace, n, m):
     return fig
 
 def run_single_simulation(algo, n, m, bad_nodes):
-    # Validation
-    if algo == "NBFT":
-        if m < 1: return "Error: Groups (m) must be >= 1", None
-        pass
+    try:
+        # Validation
+        if algo == "NBFT":
+            if m < 1: return "Error: Groups (m) must be >= 1", None
+            pass
 
-    config = RunConfig(
-        algorithm=algo,
-        n=int(n),
-        m=int(m),
-        actual_byzantine=int(bad_nodes)
-    )
-    
-    result = runner.run_single(config, save=True)
-    
-    output_text = f"Success: {result.success}\n"
-    output_text += f"Time: {result.consensus_time:.4f}s\n"
-    output_text += f"Total Messages: {result.total_messages}\n"
-    output_text += f"Decided Value: {result.decided_value}\n"
-    output_text += "\n--- LOGS ---\n" + "\n".join(result.logs[-10:]) # last 10 logs
-    
-    fig = None
-    if algo == "NBFT" and result.message_trace:
-        fig = plot_nbft_trace(result.message_trace, int(n), int(m))
-    
-    return output_text, fig
+        config = RunConfig(
+            algorithm=algo,
+            n=int(n),
+            m=int(m),
+            actual_byzantine=int(bad_nodes)
+        )
+        
+        result = runner.run_single(config, save=True)
+        
+        output_text = f"Success: {result.success}\n"
+        output_text += f"Time: {result.consensus_time:.4f}s\n"
+        output_text += f"Total Messages: {result.total_messages}\n"
+        output_text += f"Decided Value: {result.decided_value}\n"
+        output_text += "\n--- LOGS ---\n" + "\n".join(result.logs[-10:]) # last 10 logs
+        
+        fig = None
+        if algo == "NBFT" and result.message_trace:
+            fig = plot_nbft_trace(result.message_trace, int(n), int(m))
+        
+        return output_text, fig
+    except Exception as e:
+        import traceback
+        return f"SIMULATION ERROR:\n{str(e)}\n\n{traceback.format_exc()}", None
 
 def run_batch_experiment(n, m, max_f, trials):
     df = runner.run_batch_byzantine_sweep(int(n), int(m), int(max_f), int(trials))

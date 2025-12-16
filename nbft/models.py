@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any, Set
 import time
 import hashlib
 
-# --- Enums for State Management ---
+#  Enums for State Management 
 
 class NodeType(Enum):
     HONEST = auto()
@@ -43,7 +43,7 @@ class ConsensusState(Enum):
     COMMITTED = auto()
     DECIDED = auto() # NBFT specific
 
-# --- Core Data Models ---
+#  Core Data Models 
 
 @dataclass
 class Node:
@@ -76,6 +76,7 @@ class Message:
     sequence_number: int
     digest: str # Hash of the request/content
     content: Any = None # Payload (e.g., client request or simplified value 'v')
+    signature: Optional[str] = None # Digital Signature
     
     # Simulation metadata (not part of protocol, strictly for analysis)
     timestamp: float = field(default_factory=time.time)
@@ -87,6 +88,18 @@ class Message:
         # Tie-breaker for priority queue: just compare timestamps or use arbitrary ID comparison
         # Since timestamps are the primary sort key in the queue tuple, this is only called if timestamps match.
         return self.timestamp < other.timestamp
+        
+    @staticmethod
+    def sign(content: str, node_id: int) -> str:
+        """Simulates signing content with node's private key."""
+        # Simple simulated signature: H(content + node_secret)
+        return hashlib.sha256(f"{content}_SECRET_{node_id}".encode()).hexdigest()
+
+    @staticmethod
+    def verify(content: str, signature: str, node_id: int) -> bool:
+        """Verifies signature matches the expected public key owner."""
+        expected = hashlib.sha256(f"{content}_SECRET_{node_id}".encode()).hexdigest()
+        return signature == expected
 
 @dataclass
 class Vote:

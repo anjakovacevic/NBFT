@@ -134,8 +134,13 @@ class NBFTSimulator:
             "type": msg.msg_type.name
         })
         
+        # Sign the message
+        # We sign the digest as the unique content representative
+        signature = Message.sign(final_msg.digest, sender.node_id)
+        
         cloned = Message(final_msg.msg_type, final_msg.sender_id, final_msg.view, 
-                         final_msg.sequence_number, final_msg.digest, final_msg.content)
+                         final_msg.sequence_number, final_msg.digest, final_msg.content, 
+                         signature=signature)
         
         self.message_count += 1
         self.phase_counts[msg.msg_type.name] += 1
@@ -226,6 +231,12 @@ class NBFTSimulator:
         )
 
     def _handle_message(self, node: Node, msg: Message):
+        # 0. SECURITY CHECK: Verify Signature
+        if msg.signature:
+            is_valid = Message.verify(msg.digest, msg.signature, msg.sender_id)
+            if not is_valid:
+                return # Drop message
+                
         key = (msg.view, msg.sequence_number)
         if key not in self.node_states[node.node_id]:
             self.node_states[node.node_id][key] = {

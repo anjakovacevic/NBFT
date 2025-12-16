@@ -38,44 +38,32 @@ class ConsistentHashing:
     def form_groups(self, view_number: int) -> Tuple[List[Group], Dict[int, int]]:
         """
         Partitions nodes into m groups.
-        
-        Mapping to Paper Section 3.1:
-        Usually, consistent hashing assigns nodes to buckets. 
-        For this simulation, to ensure groups are balanced (as assumed in the formulas),
-        we use modulo partitioning on the sorted list relative to the primary.
-        
-        Returns:
-            - List of Group objects
-            - Dict mapping node_id -> group_id
         """
         groups = []
         node_group_map = {}
         
-        # Calculate theoretical group size R
-        # R = floor((n-1)/m) according to paper formula, but that leaves remainders.
-        # We will distribute nodes as evenly as possible.
+        import random
+        # Create a view-specific shuffling of nodes
+        # This ensures Representatives rotate every view.
+        # We seed with view_number for determinism across all nodes.
+        view_nodes = list(self.sorted_nodes)
         
-        # Identify global primary
-        global_primary_id = self.get_global_primary(view_number)
-        
-        # Filter out global primary for grouping (The global primary coordinates reps)
-        # In some NBFT variants, primary is part of a group.
-        # However, Section 3.2 logic suggests Global Primary -> Representatives.
-        # Let's assume the Global Primary is a special role, or just a member of group 0.
-        # Simplification: We distribute ALL nodes into groups.
-        
-        # Using simple chunking for determinism
-        # If n=100, m=4, groups are 0..24, 25..49, etc.
+        # Use a localized Random instance to avoid affecting global random state
+        rng = random.Random(view_number)
+        rng.shuffle(view_nodes)
         
         base_size = self.n // self.m
         remainder = self.n % self.m
+        
+        # Identify global primary
+        global_primary_id = self.get_global_primary(view_number)
         
         current_idx = 0
         for i in range(self.m):
             size = base_size + (1 if i < remainder else 0)
             group_members_indices = range(current_idx, current_idx + size)
             
-            member_ids = [self.sorted_nodes[idx].node_id for idx in group_members_indices]
+            member_ids = [view_nodes[idx].node_id for idx in group_members_indices]
             
             # Select Representative:
             # The paper says each group has a representative.

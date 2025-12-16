@@ -1,6 +1,7 @@
 import collections
 from typing import List, Dict, Set, Optional
-from queue import PriorityQueue
+import asyncio
+import time
 from .models import Node, Message, MsgType, RunConfig, RunResult, ConsensusState
 from .byzantine import ByzantineBehavior
 
@@ -12,7 +13,6 @@ class PBFTSimulator:
     def __init__(self, config: RunConfig):
         self.config = config
         self.nodes = self._setup_nodes()
-        self.msg_queue = PriorityQueue() # (time, message, target)
         self.global_time = 0.0
         self.logs = []
         
@@ -48,21 +48,16 @@ class PBFTSimulator:
 
     def send_multicast(self, sender: Node, msg: Message):
         for target in self.nodes:
-            # if target.node_id == sender.node_id: continue # Allow self-sending
-            self._schedule_message(sender, target, msg)
+            asyncio.create_task(self._async_send(sender, target, msg))
 
-    def _schedule_message(self, sender: Node, target: Node, msg: Message):
-        # Apply Byzantine behavior
+    async def _async_send(self, sender: Node, target: Node, msg: Message):
         final_msg = ByzantineBehavior.apply_behavior(sender, msg, target.node_id)
-        if final_msg is None:
-            return # Drop message
+        if final_msg is None: return
         
         # Latency model
-        latency = 0.01 if self.config.latency_profile == "constant" else 0.01 # simplified
-        arrival_time = self.global_time + latency
+        latency = 0.001
+        await asyncio.sleep(latency)
         
-        # Use python's struct for "copy" sim or just new object to avoid ref issues
-        # Simple clone via constructor for safety
         cloned_msg = Message(
             msg_type=final_msg.msg_type,
             sender_id=final_msg.sender_id,
@@ -72,46 +67,39 @@ class PBFTSimulator:
             content=final_msg.content
         )
         
-        self.msg_queue.put((arrival_time, cloned_msg, target.node_id))
         self.message_count += 1
         self.phase_counts[msg.msg_type.name] += 1
-
-    def run(self) -> RunResult:
-        self.log("Starting PBFT simulation")
         
-        # 1. Client Request (Simulated)
-        primary_id = 0 # Simple view 0
+        self._handle_message(target, cloned_msg)
+
+    async def run(self) -> RunResult:
+        self.log("Starting PBFT simulation (Async)")
+        self.consensus_event = asyncio.Event()
+        self.start_time = time.time()
+        
+        primary_id = 0 
         req_msg = Message(MsgType.PRE_PREPARE, primary_id, 0, 1, "digest_req", "VALUE_X")
         
-        # Primary Multicasts PRE-PREPARE
         primary = self.nodes[primary_id]
         
-        # CRITICAL FIX: If Primary is Silent Byzantine, it won't send anything.
-        # We simulate the ATTEMPT to send. The _schedule_message filter will handle the silence.
         self.send_multicast(primary, req_msg)
         
-        # Process Queue
-        max_steps = 10000
-        steps = 0
-        
-        while not self.msg_queue.empty() and steps < max_steps:
-            steps += 1
-            t, msg, target_id = self.msg_queue.get()
-            self.global_time = t
+        try:
+            await asyncio.wait_for(self.consensus_event.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self.log("Simulation timed out")
             
-            self._handle_message(self.nodes[target_id], msg)
-            
-            if self.consensus_reached:
-                break
+        duration = time.time() - self.start_time
                 
         return RunResult(
             success=self.consensus_reached,
-            consensus_time=self.global_time,
+            consensus_time=duration,
             total_messages=self.message_count,
             messages_per_phase=dict(self.phase_counts),
             decided_value=self.decided_value,
             logs=self.logs,
-            message_trace=[]
+            message_trace=[],
+            byzantine_nodes=[n.node_id for n in self.nodes if n.is_byzantine]
         )
 
     def _handle_message(self, node: Node, msg: Message):
@@ -163,3 +151,4 @@ class PBFTSimulator:
                 if not node.is_byzantine:
                     self.consensus_reached = True
                     self.log(f"Node {node.node_id} reached consensus on {self.decided_value}")
+                    self.consensus_event.set()

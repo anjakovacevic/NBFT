@@ -18,7 +18,8 @@ def plot_nbft_trace(trace, n, m):
     if not trace: 
         return None
         
-    fig, ax = plt.subplots(figsize=(12, 8))
+    height = max(10, n * 0.6)
+    fig, ax = plt.subplots(figsize=(14, height))
     
     # Setup Y-axis (Nodes)
     # Highlight Reps. We need to identify them. 
@@ -55,14 +56,22 @@ def plot_nbft_trace(trace, n, m):
             
         ax.text(-0.02, i, label, fontsize=8, va='center', ha='right', transform=ax.get_yaxis_transform())
 
+    # Draw Client Line
+    ax.hlines(y=-1, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='green', linewidth=2.0)
+    ax.text(-0.02, -1, "Client", fontsize=9, va='center', ha='right', fontweight='bold', transform=ax.get_yaxis_transform())
+
     # Map message types to colors
     type_colors = {
         "REP_PRE_PREPARE": "blue",
         "GROUP_PRE_PREPARE": "green",
         "GROUP_VOTE": "orange",
+        "GROUP_RESULT": "lime",
+        "ALARM": "black",
         "REP_PREPARE": "purple",
         "REP_COMMIT": "brown",
-        "FINAL_DECISION": "red"
+        "FINAL_DECISION": "red",
+        "REPLY": "cyan",
+        "VIEW_CHANGE": "magenta", 
     }
 
     # Plot Messages
@@ -90,12 +99,12 @@ def plot_nbft_trace(trace, n, m):
     # Add Legend for message types
     from matplotlib.lines import Line2D
     legend_elements = [Line2D([0], [0], color=c, lw=2, label=t) for t, c in type_colors.items()]
-    ax.legend(handles=legend_elements, loc='upper right', fontsize='small')
+    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), fontsize='small', title="Message Types")
     
     plt.tight_layout()
     return fig
 
-def run_single_simulation(algo, n, m, bad_nodes):
+async def run_single_simulation(algo, n, m, bad_nodes):
     try:
         # Validation
         if algo == "NBFT":
@@ -109,13 +118,16 @@ def run_single_simulation(algo, n, m, bad_nodes):
             actual_byzantine=int(bad_nodes)
         )
         
-        result = runner.run_single(config, save=True)
+        result = await runner.run_single(config, save=True)
         
         output_text = f"Success: {result.success}\n"
         output_text += f"Time: {result.consensus_time:.4f}s\n"
         output_text += f"Total Messages: {result.total_messages}\n"
         output_text += f"Decided Value: {result.decided_value}\n"
-        output_text += "\n--- LOGS ---\n" + "\n".join(result.logs[-10:]) # last 10 logs
+        if result.byzantine_nodes:
+            output_text += f"Byzantine Nodes: {result.byzantine_nodes}\n"
+        output_text += f"Phases: {result.messages_per_phase}\n"
+        output_text += "\nLOGS \n" + "\n".join(result.logs[-25:])
         
         fig = None
         if algo == "NBFT" and result.message_trace:
@@ -126,8 +138,8 @@ def run_single_simulation(algo, n, m, bad_nodes):
         import traceback
         return f"SIMULATION ERROR:\n{str(e)}\n\n{traceback.format_exc()}", None
 
-def run_batch_experiment(n, m, max_f, trials):
-    df = runner.run_batch_byzantine_sweep(int(n), int(m), int(max_f), int(trials))
+async def run_batch_experiment(n, m, max_f, trials):
+    df = await runner.run_batch_byzantine_sweep(int(n), int(m), int(max_f), int(trials))
     
     # Plotting Success Rate
     fig1 = plt.figure()
@@ -161,23 +173,29 @@ def load_history():
 
 # --- UI Definition ---
 
-with gr.Blocks(title="NBFT Educational Simulator") as demo:
-    gr.Markdown("# NBFT Educational Simulator")
+with gr.Blocks(title="NBFT Simulator") as demo:
+    gr.Markdown("# NBFT Simulator")
     gr.Markdown("Interactive platform for 'Improved Fault-Tolerant Consensus Based on the PBFT Algorithm'")
     
     with gr.Tabs():
         # TAB 1: Single Run
+        # TAB 1: Single Run
         with gr.TabItem("Single Simulation"):
+            # Top Row: Configuration and Text Results
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=1):
                     algo_input = gr.Radio(["PBFT", "NBFT"], label="Algorithm", value="NBFT")
                     n_input = gr.Number(label="Total Nodes (n)", value=20)
                     m_input = gr.Number(label="Groups (m) [NBFT only]", value=4)
                     bad_input = gr.Number(label="Byzantine Nodes", value=0)
                     btn_run = gr.Button("Run Simulation", variant="primary")
-                with gr.Column():
-                    output_log = gr.Textbox(label="Result & Logs", lines=10)
-                    viz_output = gr.Plot(label="Communication Visualization (NBFT Only)")
+                
+                with gr.Column(scale=1):
+                    output_log = gr.Textbox(label="Result & Logs", lines=12)
+
+            # Bottom Row: Full Width Visualization
+            with gr.Row():
+                viz_output = gr.Plot(label="Communication Visualization (NBFT Only)")
             
             btn_run.click(run_single_simulation, [algo_input, n_input, m_input, bad_input], [output_log, viz_output])
 

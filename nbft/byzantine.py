@@ -37,8 +37,9 @@ class ByzantineBehavior:
             # Relevant for NBFT Representatives. 
             # They might claim they have enough votes when they don't,
             # or forward a decision they didn't actually reach.
-            if node.is_group_representative and message.msg_type == MsgType.REP_PREPARE:
-                 message.digest = "CORRUPTED_AGGREGATE"
+            if node.is_group_representative:
+                 if message.msg_type in [MsgType.REP_PREPARE, MsgType.GROUP_RESULT]:
+                     message.digest = "CORRUPTED_AGGREGATE"
             return message
 
         elif strategy == "random_noise":

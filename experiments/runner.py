@@ -7,27 +7,27 @@ from db.repository import Repository
 
 class ExperimentRunner:
     """
-    Step 8: Experiment Runner.
-    Orchestrates batch simulations to reproduce paper plots.
+    Experiment Runner.
+    Orchestrates batch simulations to compare PBFT and NBFT results.
     """
     
     def __init__(self):
         self.repo = Repository()
 
-    def run_single(self, config: RunConfig, save: bool = False):
+    async def run_single(self, config: RunConfig, save: bool = False):
         if config.algorithm == "PBFT":
             sim = PBFTSimulator(config)
         else:
             sim = NBFTSimulator(config)
             
-        result = sim.run()
+        result = await sim.run()
         
         if save:
             self.repo.save_run(config, result)
             
         return result
 
-    def run_batch_byzantine_sweep(self, n: int, m: int, max_f: int, trials: int = 5):
+    async def run_batch_byzantine_sweep(self, n: int, m: int, max_f: int, trials: int = 5):
         """
         Sweeps byzantine count from 0 to max_f.
         Reproduces Success Rate vs Byzantine Nodes plots.
@@ -47,7 +47,7 @@ class ExperimentRunner:
                         m=m,
                         actual_byzantine=f_count
                     )
-                    res = self.run_single(config, save=True)
+                    res = await self.run_single(config, save=True)
                     if res.success: success_count += 1
                     avg_msgs += res.total_messages
                     
@@ -63,7 +63,7 @@ class ExperimentRunner:
         
         return pd.DataFrame(results)
 
-    def run_complexity_analysis(self, n_range: List[int], m: int):
+    async def run_complexity_analysis(self, n_range: List[int], m: int):
         """
         Compares O(n^2) vs O(m^2) message complexity.
         """
@@ -71,7 +71,7 @@ class ExperimentRunner:
         for n in n_range:
             for algo in ["PBFT", "NBFT"]:
                 config = RunConfig(algorithm=algo, n=n, m=m, actual_byzantine=0)
-                res = self.run_single(config)
+                res = await self.run_single(config)
                 results.append({
                     "Algorithm": algo,
                     "N": n,

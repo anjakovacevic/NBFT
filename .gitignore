@@ -20,3 +20,9 @@ Thumbs.db
 # IDE & Editor
 .vscode/
 .idea/
+
+NBFT.tex
+Improved_Fault-Tolerant_Consensus_Based_on_the_PBFT_Algorithm.pdf
+debug_nbft.py 
+
+

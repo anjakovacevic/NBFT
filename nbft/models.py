@@ -20,11 +20,17 @@ class MsgType(Enum):
     # Intra-group phases
     GROUP_PRE_PREPARE = auto() # Primary -> Group
     GROUP_VOTE = auto() # Group Members -> Representative
+    GROUP_RESULT = auto() # Rep -> Group Members know the decision
+    ALARM = auto() # Member -> Network (if the representative is not following the protocol)
     
     # Inter-group phases
     REP_PRE_PREPARE = auto() # Global Primary -> Representatives
     REP_PREPARE = auto() # Among Representatives
     REP_COMMIT = auto() # Among Representatives
+    
+    # View Change
+    VIEW_CHANGE = auto() # Broadcast when timer expires
+    NEW_VIEW = auto() # New Primary announces new view
     
     # Finalization
     REPLY = auto() # To Client
@@ -133,3 +139,4 @@ class RunResult:
     decided_value: Any
     logs: List[str]
     message_trace: List[Dict[str, Any]] = field(default_factory=list)
+    byzantine_nodes: List[int] = field(default_factory=list)

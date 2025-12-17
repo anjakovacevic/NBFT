@@ -1,264 +1,221 @@
-\documentclass[10pt,twocolumn,letterpaper]{article}
+\documentclass[conference, 11pt]{IEEEtran}
 
-%%%%%%%%% PAPER TYPE  - PLEASE UPDATE FOR FINAL VERSION
-\usepackage{cvpr}              % To produce the CAMERA-READY version
-% \usepackage[review]{cvpr}      % To produce the REVIEW version
-% \usepackage[pagenumbers]{cvpr} % To force page numbers, e.g. for an arXiv version
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{placeins}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[serbian]{babel}
 
-% Import additional packages in the preamble file, before hyperref
-\input{preamble}
+\usepackage{cite}
 
-% It is strongly recommended to use hyperref, especially for the review version.
-% hyperref with option pagebackref eases the reviewers' job.
-% Please disable hyperref *only* if you encounter grave issues, 
-% e.g. with the file validation for the camera-ready version.
-%
-% If you comment hyperref and then uncomment it, you should delete *.aux before re-running LaTeX.
-% (Or just hit 'q' on the first LaTeX run, let it finish, and you should be clear).
-\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
-\usepackage{soul}
-\usepackage[pagebackref,breaklinks,colorlinks,citecolor=cvprblue]{hyperref}
-%\renewcommand{\refname}{Literatura}
+\usepackage{listings}
+\usepackage{xcolor}
 
-\title{NBFT konsenzus algoritam}
-
-\author{Anja Kovačević, E2 75/2024\\
-Projekat iz predmeta: Primenjeni algoritmi u upravljačkim sistemima\\
-Fakultet tehničkih nauka, Univerzitet u Novom Sadu\\
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  breakatwhitespace=true,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  showstringspaces=false
 }
 
+\title{%
+  \fontsize{18}{10}\selectfont
+  NBFT KONSENZUS ALGORITAM%
+}
+%\title{\small NBFT Konsenzus Algoritam}
+\author{\IEEEauthorblockN{Anja Kovačević, E2 75/2024}
+\IEEEauthorblockA{Predmet: Primenjeni algoritmi u upravljačkim sistemima\\
+18. decembar 2025.}}
 \begin{document}
+
 \maketitle
+\thispagestyle{plain}
+\pagestyle{plain}
+\begin{abstract}
+Ovaj rad predstavlja analizu i praktičnu implementaciju NBFT (Node-grouped Byzantine Fault Tolerance) konsenzus algoritma, dizajniranog da prevaziđe ograničenja skalabilnosti klasičnog PBFT (Practical Byzantine Fault Tolerance) protokola. Kroz uvođenje hijerarhijske organizacije čvorova formiranjem grupa i delegiranjem komunikacije na izabrane predstavnike, NBFT postiže značajno smanjenje komunikacione složenosti sa $O(n^2)$ na približno $O(n)$.
+Rad detaljno opisuje razvijenu modularnu simulacionu platformu koja omogućava empirijsku verifikaciju teorijskih postavki kroz dinamičku vizuelizaciju toka poruka i batch eksperimente.
+Rezultati simulacija potvrđuju da NBFT uspešno održava konzistentnost i otpornost na vizantijske greške unutar definisanih granica ($n \ge 3f+1$), dok istovremeno demonstrira superiornu skalabilnost u mrežama sa većim brojem učesnika.
+\end{abstract}
+
 \section{Uvod}
-\label{sec:konsenzus}
 
+U savremenim distribuiranim sistemima, postizanje pouzdanog konsenzusa u prisustvu nepouzdanih ili zlonamernih aktera predstavlja jedan od ključnih izazova. Problem vizantijskih generala modeluje situacije u kojima komponente sistema mogu otkazati na proizvoljan način, uključujući slanje lažnih informacija ili koordinisano ometanje rada mreže \cite{lamport}.
+Rešenje ovog problema zahteva algoritme koji garantuju \textit{sigurnost} (safety) i \textit{živost} (liveness) uprkos prisustvu do $f$ vizantijskih čvorova u sistemu od $n$ učesnika.
 
-Distribuirani sistem se sastoji od skupa autonomnih čvorova koji međusobno komuniciraju putem poruka i nemaju zajednički sat niti deljenu memoriju. Problem postizanja saglasnosti (konsenzusa) u ovim sistemima u prisustvu neispravnih ili zlonamernih čvorova predstavlja jedno od fundamentalnih pitanja teorije i prakse distribuiranih sistema.
-U takvom okruženju, čvorovi moraju donositi koordinisane odluke isključivo na osnovu parcijalnih i potencijalno nepouzdanih informacija.
+PBFT (Practical Byzantine Fault Tolerance) algoritam, predstavljen 1999. godine, postavio je standard za praktičnu primenu vizantijskog konsenzusa u asinhronim sistemima \cite{pbft}. Iako dokazano robustan, PBFT pati od kvadratne složenosti razmene poruka ($O(n^2)$), što ga čini neprikladnim za velike mreže.
+Sa porastom broja čvorova, mrežni resursi postaju bottleneck, a latencija dramatično raste, ograničavajući primenu PBFT-a na male, zatvorene grupe konzorcijuma.
 
-Konsenzusni problem se, u najopštijem obliku, sastoji u tome da svi ispravni čvorovi sistema postignu saglasnost o istoj vrednosti, pri čemu se zahtevaju sledeća osnovna svojstva:
-\begin{itemize}
-    \item \textbf{Saglasnost (agreement)} – svi ispravni čvorovi odlučuju istu vrednost,
-    \item \textbf{Validnost (validity)} – odlučena vrednost mora poticati od nekog ispravnog čvora,
-    \item \textbf{Terminacija (termination)} – svi ispravni čvorovi donose odluku u konačnom vremenu.
-\end{itemize}
+Kao odgovor na ovaj problem, predložen je NBFT (Node-grouped BFT) algoritam koji uvodi dvostepenu hijerarhijsku strukturu \cite{nbft}. Osnovna premisa NBFT-a je podela mreže na disjunktne grupe, gde se konsenzus prvo postiže lokalno, a zatim agregira na nivou predstavnika grupa.
+Ovaj pristup ima za cilj da zadrži bezbednosne garancije PBFT-a uz drastično smanjenje broja potrebnih poruka.
 
-Težina konsenzusnog problema značajno zavisi od pretpostavljenog modela grešaka.
-Posebno zahtevan i opšti model predstavlja tzv. \textit{vizantijski model grešaka}, u kojem čvorovi mogu proizvoljno odstupati od definisanog protokola.
-Takvi čvorovi mogu slati netačne, kontradiktorne ili selektivne poruke, kao i potpuno prekinuti komunikaciju, čime se simulira ponašanje zlonamernih ili kompromitovanih komponenti sistema.
+Cilj ovog rada je:
+\begin{enumerate}
+    \item Teorijska analiza NBFT algoritma i njegovih mehanizama za redukciju saobraćaja.
+    \item Implementacija modularnog softverskog simulatora koji verno modeluje asinhronu prirodu distribuiranog sistema.
+    \item Eksperimentalna evaluacija performansi i otpornosti implementiranog rešenja kroz seriju testova skalabilnosti i injektovanja grešaka.
+\end{enumerate}
 
-Konsenzusni algoritmi tolerantni na vizantijske greške (Byzantine Fault Tolerant, BFT) predstavljaju osnovu pouzdanog rada kritičnih distribuiranih sistema, uključujući replikovane baze podataka, finansijske sisteme, industrijske kontrolne mreže i druge aplikacije kod kojih je neophodna visoka dostupnost i otpornost na greške.
-
-Jedan od najpoznatijih i najuticajnijih algoritama iz ove oblasti je PBFT (Practical Byzantine Fault Tolerance).
-PBFT omogućava determinističko postizanje konsenzusa u sistemima sa poznatim i ograničenim brojem čvorova, uz toleranciju do $f$ vizantijskih grešaka u sistemu sa $n \geq 3f + 1$ čvorova.
-Bitno je napomenuti, da je PBFT je osmišljen sa ciljem praktične primene u realnim distribuiranim okruženjima.
-
-Iako PBFT obezbeđuje snažne bezbednosne garancije i determinističku konačnost, njegova primena je ograničena zbog velike komunikacione složenosti.
-Ovaj algoritam zahteva razmenu poruka između svih čvorova u sistemu, što dovodi do kvadratnog rasta broja poruka sa povećanjem broja učesnika.
-Ovo ograničenje značajno utiče na skalabilnost i praktičnu upotrebu PBFT algoritma u sistemima većih razmera.
-
-Konsenzus algoritam NBFT (Node-grouped Byzantine Fault Tolerance), uvodi hijerarhijsku organizaciju čvorova u cilju poboljšanja skalabilnosti PBFT pristupa.
-Osnovna ideja NBFT algoritma je da se zadrže proverene bezbednosne karakteristike PBFT-a, dok se istovremeno smanjuje komunikaciona složenost kroz grupisanje čvorova i delegiranje međugrupne komunikacije.
+U nastavku rada date je pregled problema skalabilnosti PBFT-a, detaljan opis NBFT arhitekture, prikaz softverske implementacije, kao i analiza dobijenih eksperimentalnih rezultata.
 
 
 \section{Problem skalabilnosti PBFT algoritma}
 
-PBFT algoritam realizuje konsenzus kroz sekvencu jasno definisanih faza: \textit{pre-prepare}, \textit{prepare} i \textit{commit}.
-Tokom ovih faza, čvor koji ima ulogu primarnog koordinatora inicira predlog odluke, nakon čega svi čvorovi u sistemu razmenjuju poruke kako bi proverili ispravnost predloga i postigli saglasnost.
+PBFT algoritam realizuje konsenzus kroz sekvencu tri jasno definisane faze: \textit{pre-prepare}, \textit{prepare} i \textit{commit} \cite{pbft}. Tokom ovih faza, primarni čvor (lider) inicira predlog odluke, nakon čega svi učesnici mreže međusobno razmenjuju poruke kako bi verifikovali ispravnost predloga i postigli globalnu saglasnost.
 
-Ključna karakteristika PBFT algoritma jeste da svaki čvor komunicira sa svim ostalim čvorovima u svakoj fazi konsenzusa.
-U sistemu sa $n$ čvorova, ovakav obrazac komunikacije rezultuje u približno $O(n^2)$ razmenjenih poruka po jednoj instanci konsenzusa.
+Dominantna karakteristika ovog procesa je zahtev za potpunom mrežnom topologijom u kojoj svaki čvor komunicira sa svim ostalim čvorovima (\textit{all-to-all communication}).
+U sistemu sa $n$ čvorova, ovaj komunikacioni obrazac rezultuje složenošću od $O(n^2)$ poruka po jednoj instanci konsenzusa.
+Svrha ovakvog dizajna je obezbeđivanje maksimalne sigurnosti, jer omogućava svakom ispravnom čvoru da prikupi dovoljno dokaza o ponašanju svih ostalih učesnika pre donošenja odluke. Međutim, sa aspekta skalabilnosti, ovo predstavlja ozbiljno ograničenje.
 
-Sa povećanjem broja čvorova, komunikaciona složenost PBFT algoritma direktno utiče na:
-\begin{itemize}
-    \item povećanje latencije u postizanju saglasnosti,
-    \item značajno opterećenje mrežnih resursa,
-    \item povećanu verovatnoću pojave zagušenja i vremenskih isteka,
-    \item složenije upravljanje ponovnim pokušajima i promenama pogleda (view change).
-\end{itemize}
+Sa linearnim porastom broja učesnika, kvadratni rast broja poruka dovodi do:
+\begin{enumerate}
+    \item Povećanja mrežne latencije, usled vremena potrebnog za propagaciju i obradu velikog broja poruka,
+    \item Saturacije mrežnog protoka (bandwidth), što može izazvati gubitak paketa i potrebu za retransmisijom,
+    \item Eksponencijalnog rasta vremena potrebnog za oporavak sistema (\textit{View Change}), što direktno ugrožava živost (\textit{liveness}) sistema.
+\end{enumerate}
 
-U praktičnim uslovima, ove karakteristike dovode do toga da PBFT pokazuje zadovoljavajuće performanse samo u relativno malim, zatvorenim sistemima sa stabilnim članstvom.
-
-Navedeni problemi skalabilnosti motivišu istraživanje unapređenih konsenzusnih mehanizama koji zadržavaju bezbednosna svojstva PBFT algoritma, ali uvode optimizacije u pogledu organizacije čvorova i obrasca komunikacije.
- 
+U praktičnim primenama, ova ograničenja svode upotrebu PBFT-a na sisteme malog obima (do nekoliko desetina čvorova). Identifikacija ovog uskog grla predstavljala je primarnu motivaciju za razvoj hijerarhijskih pristupa poput NBFT-a, čiji je cilj optimizacija komunikacione matrice bez kompromitovanja bezbednosnih garancija.
 
 \section{NBFT algoritam}
 
-NBFT algoritam polazi od ideje da se skalabilnost može poboljšati uvodjenjem hijerarhijske strukture u proces konsenzusa.
-Umesto da svi čvorovi direktno učestvuju u globalnoj razmeni poruka, sistem se deli na manje grupe čvorova.
+NBFT algoritam je dizajniran sa ciljem prevazilaženja komunikacionih barijera PBFT protokola uvođenjem dvoslojne hijerarhijske arhitekture \cite{nbft}.
+Osnovna ideja počiva na principu "podeli pa vladaj": umesto monolitnog konsenzusa celog sistema, proces se dekomponuje na lokalne konsenzuse unutar manjih grupa, čiji se rezultati potom agregiraju.
+Ovakva struktura je uvedena kako bi se skupa globalna komunikacija zamenila efikasnijom lokalnom razmenom.
 
-Osnovni koncept NBFT algoritma sastoji se iz sledećih koraka:
+Protokol se odvija u tri ključne faze:
 \begin{enumerate}
-    \item Podela svih čvorova u disjunktne grupe fiksne veličine,
-    \item Postizanje konsenzusa unutar svake grupe korišćenjem PBFT algoritma,
-    \item Razmena rezultata izmedju grupa preko predstavničkih čvorova.
+    \item \textbf{Grupisanje čvorova}: Particionisanje mreže na disjunktne podskupove.
+    \item \textbf{Unutar-grupni konsenzus}: Izvršavanje PBFT instance na lokalnom nivou.
+    \item \textbf{Među-grupni konsenzus}: Agregacija odluka putem predstavničkih čvorova.
 \end{enumerate}
 
-Na ovaj način se smanjuje broj poruka koje se razmenjuju na globalnom nivou, dok se unutar grupa zadržava provereni PBFT mehanizam.
+\subsection{Formiranje grupa i izbor predstavnika}
 
- 
+Sistem od $n$ čvorova se deterministički deli na $R$ grupa veličine $m$, pri čemu je veličina grupe diktirana zahtevom za otpornost na $f_1$ vizantijskih grešaka unutar grupe ($m \ge 3f_1 + 1$).
+Unutar svake grupe bira se jedan predstavnički čvor (\textit{Representative}), čija je uloga da zastupa konsenzus svoje grupe na globalnom nivou.
 
-\subsection{Formiranje grupa i izbor predstavničkih čvorova}
-
-Sistem se sastoji od $n$ čvorova koji se dele u grupe veličine $m$, pri čemu važi uslov:
-\[
-m = 3f_1 + 1
-\]
-gde $f_1$ predstavlja maksimalan broj vizantijskih čvorova koji se mogu tolerisati unutar jedne grupe.
-
-Broj grupa u sistemu je:
-\[
-R = \left\lfloor \frac{n-1}{m} \right\rfloor
-\]
-
-U svakoj grupi se bira jedan predstavnički čvor (representative primary), koji ima ulogu da zastupa stav cele grupe tokom medjugrupne faze konsenzusa.
-Izbor predstavničkog čvora vrši se deterministički, korišćenjem \textbf{konzistentnog heširanja}, čime se obezbedjuje ravnomerna raspodela odgovornosti i smanjuje mogućnost manipulacije izborom.
-
-Potrebno je ustanoviti konsenzus u dva nivoa:
-
-\paragraph{ 1. Konsenzus unutar grupe}
-
-Unutar svake grupe se izvršava standardni PBFT protokol.
-Čvorovi u grupi razmenjuju poruke kako bi postigli saglasnost o predloženoj vrednosti.
-Ako grupa uspešno postigne konsenzus, predstavnički čvor dobija kriptografske dokaze (potpise) koji potvrdjuju odluku grupe.
-
-\paragraph{2. Konsenzus medju grupama}
-
-Predstavnički čvorovi razmenjuju odluke svojih grupa.
-Na ovom nivou se primenjuju dodatni mehanizmi za otkrivanje i ublažavanje efekata vizantijskog ponašanja, s obzirom na to da pojedini predstavnici mogu biti neispravni ili zlonamerni.
-
- 
-
-\subsection{Model emitovanja odluka čvorova}
-
-Kako bi se sprečilo da neispravan predstavnički čvor ugrozi ispravnost konsenzusa, NBFT uvodi model emitovanja odluka čvorova.
-U slučaju detekcije abnormalnog ponašanja, regularni čvorovi dobijaju pravo da direktno emituju svoje odluke ka drugim grupama.
-
-Abnormalno ponašanje se detektuje u sledećim situacijama:
+Izbor predstavnika se vrši korišćenjem mehanizma \textbf{konzistentnog heširanja} (ili determinističkog mešanja).
+Svrha ovog pristupa je dvostruka:
 \begin{itemize}
-    \item predstavnički čvor šalje poruku koja nije u skladu sa lokalno postignutom odlukom,
-    \item predstavnički čvor ne odgovara u predvidjenom vremenskom intervalu,
-    \item broj validnih potpisa priloženih uz odluku je manji od potrebnog praga.
+    \item \textbf{Transparentnost}: Svi čvorovi nezavisno dolaze do istog zaključka o topologiji mreže bez potrebe za centralnim koordinatorom.
+    \item \textbf{Balansiranje opterećenja}: Rotacijom uloga kroz različite poglede (\textit{Views}) sprečava se da isti čvorovi budu trajno opterećeni ulogom pregovarača, čime se povećava dugoročna stabilnost sistema.
 \end{itemize}
 
-Ovim mehanizmom se smanjuje zavisnost sistema od pojedinačnih predstavnika i povećava robusnost algoritma.
+Konsenzus se uspostavlja kroz dva nivoa:
 
- 
+\paragraph{1. Lokalni konsenzus (Intra-group)}
+Svaka grupa nezavisno izvršava PBFT protokol. Čvorovi unutar grupe validiraju predlog i glasaju.
+Cilj ove faze je da se potvrdi ispravnost transakcije na mikronivou pre nego što se ona propagira ostatku mreže.
+Ukoliko se postigne kvorum, predstavnik dobija legitimitet (u vidu digitalnih potpisa članova) da prenese odluku dalje.
 
-\subsection{Model ponderisanog brojanja glasova}
+\paragraph{2. Globalni konsenzus (Inter-group)}
+Predstavnici grupa formiraju "komitet" koji sprovodi završnu instancu konsenzusa. Oni razmenjuju agregirane odluke svojih grupa.
+Razdvajanje na dva nivoa je ključni mehanizam optimizacije: umesto $n$ čvorova, u globalnoj komunikaciji učestvuje samo $R \approx n/m$ učesnika, što drastično smanjuje broj poruka.
 
-NBFT uvodi ponderisani model glasanja kako bi se razlikovala pouzdanost informacija koje dolaze od predstavničkih i regularnih čvorova.
-Glas predstavničkog čvora ima veću težinu ukoliko je potkrepljen dovoljnim brojem validnih potpisa iz njegove grupe.
+\subsection{Watchdog mehanizam i emitovanje odluka}
 
-Ukoliko predstavnički čvor ne uspe da obezbedi dovoljan dokaz, težina njegovog glasa se smanjuje proporcionalno broju validnih potpisa.
-Na ovaj način se sprečava da lažne ili nepotvrdjene odluke imaju presudan uticaj na konačni ishod konsenzusa.
+S obzirom na to da predstavnički čvorovi predstavljaju kritičnu tačku neuspeha (Single Point of Failure) za svoje grupe, NBFT uvodi sigurnosni mehanizam tzv. \textbf{Watchdog}.
+Regularni čvorovi pasivno nadgledaju ponašanje svog predstavnika.
+Ukoliko detektuju maliciozno ponašanje (npr. predstavnik šalje odluku suprotnu onoj koja je izglasana u grupi), čvorovi imaju pravo da zaobiđu hijerarhiju i direktno emituju svoje dokaze (\textit{Fraud Proof}) ostalim grupama.
 
- 
+Svrha ovog mehanizma je očuvanje bezbednosti sistema (Safety) čak i u slučaju kada je predstavnik korumpiran, onemogućavajući mu da jednostrano falsifikuje volju svoje grupe.
 
-\subsection{Tolerancija na vizantijske greške}
+\subsection{Ponderisano glasanje}
 
-NBFT algoritam omogućava toleranciju na greške na nivou grupa, a ne samo pojedinačnih čvorova.
-Definiše se maksimalan broj grupa koje mogu biti kompromitovane:
-\[
-w = \left\lfloor \frac{R-1}{3} \right\rfloor
-\]
+Kako bi se dodatno osigurala validnost odluka, NBFT primenjuje model \textbf{ponderisanog glasanja}.
+Glas predstavnika u globalnom konsenzusu nema fiksnu vrednost, već je ponderisan brojem validnih potpisa koje je prikupio od svoje grupe.
+Ova mera je uvedena kako bi se kvantifikovalo "poverenje" u odluku svake grupe — predstavnik koji ne može da dokaže podršku svoje baze ima marginalan uticaj na konačni ishod.
 
-Sistem ostaje ispravan sve dok broj kompromitovanih grupa ne premaši ovaj prag.
-Ovakav model omogućava da sistem funkcioniše čak i u prisustvu potpuno neispravnih grupa, pod uslovom da većina grupa ostane ispravna.
-
- 
-
-\subsection{Komunikaciona složenost}
-
-Ukupna komunikaciona složenost NBFT algoritma može se aproksimirati izrazom:
-\[
-C = 2(n-1) + 2(m-1)\left\lfloor \frac{n-1}{m} \right\rfloor + \left\lfloor \frac{n-1}{m} \right\rfloor^2
-\]
-
-U poredjenju sa $O(n^2)$ složenošću PBFT algoritma, NBFT pokazuje znatno povoljnije ponašanje pri većem broju čvorova, što ga čini pogodnijim za veće distribuirane sisteme sa poznatim članstvom.
-
- 
+\subsection{Teorijska analiza skalabilnosti}
+Analitički izraz za broj poruka u NBFT protokolu dat je formulom:
+\[ C_{NBFT} = 2(n-1) + 2(m-1)\frac{n}{m} + \left(\frac{n}{m}\right)^2 \]
+Prvi član predstavlja komunikaciju klijenta sa mrežom, drugi član odražava lokalnu komunikaciju unutar svih grupa, dok treći član aproksimira komunikaciju između predstavnika.
+Za fiksno $m$, ukupna složenost teži $O(n)$, što predstavlja značajno teorijsko unapređenje u odnosu na $O(n^2)$ kod PBFT-a.
+Ova redukcija čini osnovu za tvrdnju da je NBFT algoritam pogodan za primenu u mrežama velikih razmera (Enterprise Blockchain, IoT mreže). 
 \section{Softverska arhitektura}
 
 Realizovano rešenje predstavlja modularnu softversku platformu dizajniranu za simulaciju i analizu konsenzus algoritama.
 Arhitektura sistema je zasnovana na principima objektno-orijentisanog programiranja i čistoj separaciji odgovornosti (separation of concerns), što omogućava lako održavanje i proširivanje funkcionalnosti.
 
 \subsection{Komponente sistema}
-Struktura projekta podeljena je na tri ključna sloja:
+Struktura projekta podeljena je na sledeće ključne celine:
 
 \begin{itemize}
-    \item \textbf{Domenski sloj (\texttt{models.py})}:
-    Definiše ključne entitete sistema kao što su \texttt{Node} (čvor), \texttt{Message} (poruka) i \texttt{RunConfig} (konfiguracija eksperimenta).
+    \item \textbf{Domenski sloj (\texttt{nbft/models.py})}:
+    Definiše osnovne entitete sistema kao što su \texttt{Node} (čvor), \texttt{Message} (poruka) i \texttt{RunConfig} (konfiguracija eksperimenta).
     Ovaj sloj koristi Python \texttt{dataclasses} za efikasno modelovanje nepromenljivih struktura podataka.
     
-    \item \textbf{Sloj poslovne logike (\texttt{nbft\_sim.py}, \texttt{consistent\_hash.py}, \texttt{byzantine.py})}:
-    Predstavlja srž aplikacije gde su implementirani algoritmi.
-    Modul \texttt{nbft\_sim.py} sadrži logiku za upravljanje stanjem automata čvorova, obradu poruka i tranziciju pogleda (view change).
-    Modul \texttt{byzantine.py} inkapsulira logiku zlonamernog ponašanja, omogućavajući injektovanje različitih strategija napada (npr. \textit{bad\_aggregator}).
+    \item \textbf{Sloj poslovne logike (\texttt{nbft/})}:
+    Predstavlja srž aplikacije gde su implementirani algoritmi:
+    \begin{itemize}
+        \item \texttt{nbft\_sim.py}: Implementira klasu \texttt{NBFTSimulator} koja upravlja stanjem automata čvorova, obradu poruka i tranziciju pogleda (view change).
+        \item \texttt{consistent\_hash.py}: Realizuje logiku formiranja grupa i izbora predstavnika. Iako konceptualno zasnovan na konzistentnom heširanju, u implementaciji se koristi determinističko mešanje (seeded shuffle) kako bi se osiguralo da svi čvorovi imaju identičnu sliku topologije u svakom pogledu.
+        \item \texttt{byzantine.py}: Inkapsulira logiku zlonamernog ponašanja, omogućavajući injektovanje različitih strategija napada (npr. \textit{bad\_aggregator}).
+    \end{itemize}
     
     \item \textbf{Prezentacioni sloj (\texttt{app.py})}:
-    Za interakciju sa korisnikom odabrana je biblioteka **Gradio**. Ona omogućava brzu generaciju modernog web GUI gde korisnici mogu lako da podešavaju parametre simulacije ($N, M, f$) i pokreću eksperimente jednim klikom. Posebna vrednost ovog interfejsa je vizuelizacija: implementirano je dinamičko iscrtavanje grafikona koji prikazuje tok poruka između čvorova u realnom vremenu.
+    Za interakciju sa korisnikom odabrana je biblioteka \textbf{Gradio}. Ona omogućava brzu generaciju modernog web GUI-a gde korisnici mogu lako da podešavaju parametre simulacije ($N, M, f$) i pokreću eksperimente. Implementirane su tri glavne funkcionalnosti:
+    \begin{enumerate}
+        \item \textbf{Single Simulation}: Vizuelizacija toka poruka (Message Sequence Chart) korišćenjem biblioteke \textbf{Matplotlib}.
+        \item \textbf{Batch Experiments}: Masovno pokretanje simulacija radi analize uticaja broja vizantijskih čvorova na uspeh i performanse.
+        \item \textbf{Saved History}: Pregled istorijskih rezultata.
+    \end{enumerate}
 
-    \item \textbf{Sloj za perzistenciju podataka (\texttt{db/database.py})}:
-    Kako bismo omogućili naknadnu analizu i poređenje više eksperimenata, implementirali smo sistem za čuvanje rezultata. Koristimo **SQLite** bazu podataka u koju beležimo ishode svake simulacije (vreme izvršavanja, broj poruka, uspeh/neuspeh). Ovo nam omogućava da gradimo istoriju eksperimenata i generišemo zbirne izveštaje bez potrebe za ponovnim pokretanjem dugotrajnih simulacija.
+    \item \textbf{Sloj za perzistenciju (\texttt{db/repository.py})}:
+    Za trajno čuvanje rezultata eksperimenata koristi se \textbf{SQLite} baza podataka. Repozitorijum omogućava čuvanje ishoda svake simulacije radi naknadne analize i generisanja zbirnih izveštaja.
 \end{itemize}
 
 \subsection{Model asinhronog izvršavanja}
-S obzirom na prirodu distribuiranih sistema, simulacija koristi \texttt{asyncio} biblioteku za modelovanje konkurentnosti.
+Simulacija koristi \texttt{asyncio} biblioteku za modelovanje konkurentnosti.
 Svaki čvor u sistemu funkcioniše kao nezavisna asinhrona rutina (coroutine), koja komunicira sa drugima putem asinhronih kanala.
 Ovakav pristup omogućava verodostojnu simulaciju mrežnih kašnjenja i redosleda pristizanja poruka bez potrebe za korišćenjem "teških" nitnih (thread) procesa.
 
-\subsection{Implementacija entiteta i mrežnog sloja}
-
-\subsubsection{Modelovanje čvorova (Node)}
-Svaki čvor u sistemu je predstavljen klasom \texttt{Node} koja enkapsulira:
+\subsection{Implementacija mehanizama zaštite}
+Poseban fokus u implementaciji stavljen je na robusnost sistema:
 \begin{itemize}
-    \item \textbf{Identitet}: Jedinstveni ID i par kriptografskih ključeva (privatni/javni) za potpisivanje poruka.
-    \item \textbf{Stanje automata}: Čvor može biti u jednom od definisanih stanja (\texttt{PREPARED}, \texttt{COMMITTED}, \texttt{DECIDED}) koja diktiraju njegovu reakciju na pristigle poruke.
-    \item \textbf{Uloga}: Atributi kao što su \texttt{is\_representative} i \texttt{is\_byzantine} definišu ponašanje čvora u tekućem pogledu (View).
-\end{itemize}
-
-\subsubsection{Struktura poruka (Message)}
-Komunikacija se odvija razmenom objekata klase \texttt{Message}, implementirane kao Python \texttt{dataclass} radi memorijske efikasnosti. Svaka poruka sadrži:
-\begin{itemize}
-    \item \texttt{msg\_type}: Tip poruke (npr. \texttt{REP\_PREPARE}, \texttt{GROUP\_VOTE}),
-    \item \texttt{view} i \texttt{sequence\_number}: Logički sat sistema,
-    \item \texttt{digest} i \texttt{content}: Sadržaj odluke,
-    \item \texttt{signature}: Digitalni potpis pošiljaoca.
+    \item \textbf{Watchdog mehanizam}: Implementiran je sistem nadzora gde čvorovi unutar grupe verifikuju odluke svojih predstavnika. U slučaju detekcije nevalidne agregacije (npr. neispravan potpis), emituje se globana \texttt{ALARM} poruka.
+    \item \textbf{Izolacija neispravnih grupa}: Tokom međugrupne komunikacije, predstavnici ignorišu glasove koji dolaze iz grupa označenih kao kompromitovane (one za koje je primljen validan alarm).
+    \item \textbf{Implementacija ponderisanog glasanja}: Uvedeno je dinamičko računanje težine glasa predstavnika. Svaki \texttt{Representative} uz svoju odluku prilaže težinu ($w$) koja odgovara broju validnih potpisa prikupljenih od članova svoje grupe tokom lokalnog konsenzusa. Globalni kvorum se ne računa prostim brojanjem predstavnika, već sumiranjem njihovih težina, pri čemu je za odluku neophodno prikupiti podršku $> 2n/3$ ukupne "mrežne težine".
 \end{itemize}
 
 \subsubsection{Simulacija mrežnog saobraćaja}
-Iako sistem ne koristi stvarne mrežne sokete, mrežni sloj je simuliran u klasi \texttt{NBFTSimulator}. Metoda \texttt{\_async\_send}:
+Klasa \texttt{NBFTSimulator} simulira mrežni sloj metodom \texttt{\_async\_send}, koja:
 \begin{enumerate}
-    \item Klonira poruku kako bi se sprečilo deljenje reference u memoriji,
-    \item Uvodi veštačko kašnjenje (latency) korišćenjem \texttt{asyncio.sleep},
-    \item Poziva modul \texttt{ByzantineBehavior} koji, u zavisnosti od strategije pošiljaoca, može izmeniti, obrisati ili duplirati poruku pre isporuke,
+    \item Klonira poruku radi sprečavanja deljenja referenci,
+    \item Uvodi veštačko kašnjenje (latency),
+    \item Primenjuje definisanu vizantijsku strategiju (modifikacija ili brisanje poruke),
     \item Stavlja poruku u red događaja ciljnog čvora.
 \end{enumerate}
 Ovaj pristup omogućava determinističku, ali realističnu simulaciju distribuiranog okruženja.
 
 \section{Eksperimentalna analiza}
 
-Za potrebe verifikacije teorijskih postavki, razvijen je simulacioni okvir u programskom jeziku Python.
-Simulacija modeluje rad PBFT i NBFT algoritama u kontrolisanom okruženju sa mogućnošću injektovanja vizantijskih grešaka.
+Za potrebe evaluacije performansi i robusnosti NBFT algoritma, sprovedena je serija simulacija korišćenjem razvijene softverske platforme. Eksperimenti su fokusirani na dva ključna aspekta: skalabilnost u pogledu broja poruka i otpornost na vizantijske greške.
 
-\subsection{Implementacija}
-Razvijeni sistem podržava:
+\subsection{Postavka eksperimenata}
+Eksperimenti su izvršeni u kontrolisanom asinhronom okruženju. Korišćeni su sledeći parametri:
 \begin{itemize}
-    \item Dinamičko formiranje grupa korišćenjem konzistentnog heširanja,
-    \item Simulaciju mrežne latencije i gubitka paketa,
-    \item Mehanizam "Watchdog" za detekciju zlonamernih predstavnika,
-    \item Kriptografsko potpisivanje poruka radi autentičnosti.
+    \item Ukupan broj čvorova $n$: Variran u opsegu od $10$ do $100$.
+    \item Broj grupa $m$: Za NBFT konfiguraciju, $m$ je postavljen na vrednosti $2, 4, 5$.
+    \item Broj vizantijskih čvorova $f$: Variran od $0$ do $n/3$ kako bi se testirale granice otpornosti algoritma.
 \end{itemize}
+Svaka konfiguracija je testirana kroz više nezavisnih ponavljanja (trials) radi statističke značajnosti rezultata.
 
-\subsection{Bezbednost i otpornost na greške}
-Testirana je otpornost algoritma na prisustvo vizantijskih čvorova koji primenjuju strategije poput namernog ćutanja (silent failure) i slanja kontradiktornih poruka (equivocation).
-Rezultati pokazuju da NBFT uspešno održava konsenzus sve dok broj kompromitovanih grupa ne prelazi teorijski prag $w$.
+\subsection{Analiza otpornosti na greške}
+Kroz modul \textbf{Batch Experiments}, generisan je grafik zavisnosti uspešnosti konsenzusa (Success Rate) od broja vizantijskih čvorova.
+Rezultati pokazuju da NBFT održava visoku stopu uspešnosti sve dok je broj kompromitovanih grupa ispod teorijskog praga $w$. 
+Posebno je značajno da mehanizam \textbf{Watchdog} uspešno detektuje "Silent Failure" i "Equivocation" napade predstavnika, inicirajući alarme koji sprečavaju prihvatanje nevalidnih odluka na globalnom nivou.
 
-\subsection{Analiza skalabilnosti}
-Poređenje komunikacione složenosti izvršeno je variranjem broja čvorova $n$ od 10 do 100.
-Eksperimentalni rezultati potvrđuju da PBFT pokazuje kvadratni rast broja poruka ($O(n^2)$), dok NBFT, zahvaljujući grupisanju, održava znatno nižu, približno linearnu složenost ($O(n)$).
-Ovo potvrđuje glavnu hipotezu rada o superiornoj skalabilnosti hijerarhijskog pristupa.
+\subsection{Analiza komunikacione složenosti}
+Poređenjem prosečnog broja razmenjenih poruka po jednoj instanci konsenzusa, potvrđene su teorijske pretpostavke o superiornoj skalabilnosti NBFT-a.
+Dok referentna PBFT implementacija pokazuje eksponencijalni rast saobraćaja ($O(n^2)$), NBFT demonstrira linearnu zavisnost ($O(n)$) zahvaljujući hijerarhijskoj redukciji.
+Ovo smanjenje je vizuelno potvrđeno i kroz generisane \textit{Message Sequence Chart} dijagrame, gde je evidentna manja gustina poruka u međugrupnoj komunikaciji u poređenju sa potpunom "all-to-all" komunikacijom kod PBFT-a.
 
 \subsection{Ograničenja PBFT implementacije}
 Važno je napomenuti da, dok NBFT implementacija sadrži napredne mehanizme oporavka (View Change) i kriptografsku zaštitu, korišćena referentna implementacija PBFT algoritma predstavlja pojednostavljenu verziju.
@@ -267,22 +224,29 @@ Ova simplifikacija je namerna kako bi se izolovao uticaj komunikacione složenos
 
 \section{Zaključak}
 
-NBFT algoritam predstavlja značajno unapredjenje klasičnog PBFT pristupa u pogledu skalabilnosti.
-Uvodjenjem grupne strukture, predstavničkih čvorova i dodatnih mehanizama za detekciju i ublažavanje vizantijskog ponašanja, NBFT uspeva da smanji komunikacionu složenost uz očuvanje bezbednosnih garancija.
+U ovom radu prezentovana je sveobuhvatna analiza i implementacija NBFT algoritma kao rešenja za inherentne probleme skalabilnosti klasičnog PBFT protokola.
+Kroz razvoj modularne simulacione platforme, uspešno su verifikovane teorijske pretpostavke o linearnoj komunikacionoj složenosti ($O(n)$) hijerarhijskog pristupa.
 
-Iako NBFT nije namenjen direktnoj primeni u javnim blokčejn sistemima, on pruža vredan uvid u dizajn skalabilnih konsenzus algoritama i predstavlja dobru osnovu za dalje istraživanje hijerarhijskih i komitetskih pristupa u distribuiranim sistemima.
+Ključni doprinosi rada ogledaju se u:
+\begin{enumerate}
+    \item \textbf{Praktičnoj validaciji}: Eksperimentalni rezultati nedvosmisleno potvrđuju da grupisanje čvorova drastično smanjuje opterećenje mreže bez degradacije otpornosti na greške, pod uslovom da je broj kompromitovanih grupa ograničen.
+    \item \textbf{Robustnosti dizajna}: Implementirani mehanizmi zaštite, poput Watchdog nadzora i ponderisanog glasanja, pokazali su se efikasnim u neutralisanju sofisticiranih vizantijskih napada na nivou predstavnika.
+    \item \textbf{Otvorenoj platformi}: Razvijeni softverski okvir, sa svojim intuitivnim grafičkim interfejsom i detaljnom vizuelizacijom, predstavlja vredan alat za dalja istraživanja u domenu distribuiranih algoritama.
+\end{enumerate}
 
- 
+Dobijeni rezultati sugerišu da je NBFT vijabilna alternativa za primenu u privatnim blokčejn mrežama i industrijskim IoT sistemima gde su performanse i skalabilnost od primarnog značaja. Budući rad može se fokusirati na optimizaciju procesa rekonfiguracije grupa i analizu ponašanja sistema u dinamičkim mrežnim uslovima sa visokom stopom otkaza čvorova.
 
-\section{Literatura}
 
 \begin{thebibliography}{1}
 
-\bibitem{nbft}
-Improved Fault-Tolerant Consensus Based on the PBFT Algorithm.
+\bibitem{lamport}
+L. Lamport, R. Shostak, and M. Pease, ``The Byzantine Generals Problem,'' \emph{ACM Trans. Program. Lang. Syst.}, vol. 4, no. 3, pp. 382--401, July 1982, doi: 10.1145/357172.357176.
 
 \bibitem{pbft}
-Castro, M., Liskov, B., \emph{Practical Byzantine Fault Tolerance}, OSDI, 1999.
+M. Castro and B. Liskov, ``Practical Byzantine Fault Tolerance,'' in \emph{Proc. 3rd Symp. Oper. Syst. Des. Implem. (OSDI)}, New Orleans, LA, USA, Feb. 1999, pp. 173--186.
+
+\bibitem{nbft}
+J. Yang, Z. Jia, R. Su, X. Wu, and J. Qin, ``Improved Fault-Tolerant Consensus Based on the PBFT Algorithm,'' \emph{IEEE Access}, vol. 10, pp. 30274--30283, 2022, doi: 10.1109/ACCESS.2022.3153701.
 
 \end{thebibliography}
 

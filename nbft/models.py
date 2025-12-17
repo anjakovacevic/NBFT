@@ -67,8 +67,7 @@ class Node:
 @dataclass
 class Message:
     """
-    A network message.
-    Simulates the packets exchanged in Section 2 and 3.
+    A network message
     """
     msg_type: MsgType
     sender_id: int
@@ -77,6 +76,7 @@ class Message:
     digest: str # Hash of the request/content
     content: Any = None # Payload (e.g., client request or simplified value 'v')
     signature: Optional[str] = None # Digital Signature
+    weight: int = 1 # NBFT weighted voting: number of valid signatures collected
     
     # Simulation metadata (not part of protocol, strictly for analysis)
     timestamp: float = field(default_factory=time.time)

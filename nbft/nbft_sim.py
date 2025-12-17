@@ -279,29 +279,29 @@ class NBFTSimulator:
                 st["group_votes"].add(msg.sender_id)
                 
                 # Calculate Threshold w
-                # R = size of group. 
-                # Theoretically R = floor((n-1)/m), but we use actual size
                 group_id = self.node_group_map[node.node_id]
                 current_group_size = self.groups[group_id].size
                 w = Analysis.calculate_w(current_group_size)
-                # Requirement: Votes >= R - w (Honest majority in group?)
-                # Actually paper says: "If collect (R-w) consistent votes"
                 
                 threshold = current_group_size - w
                 
                 if len(st["group_votes"]) >= threshold and st["state"] == ConsensusState.IDLE:
-                    st["state"] = ConsensusState.PRE_PREPARED # Misnomer, but essentially "Group Consensus Reached"
-                    self.log(f"Rep {node.node_id} reached Intra-Group consensus (votes: {len(st['group_votes'])})")
+                    st["state"] = ConsensusState.PRE_PREPARED
+                    # -- Weighted Voting Implementation --
+                    # Weight = number of valid votes collected from group members
+                    vote_weight = len(st["group_votes"])
+                    self.log(f"Rep {node.node_id} reached Intra-Group consensus (votes: {vote_weight}, weight: {vote_weight})")
                     
-                    # 1. NEW: Broadcast Result sent to Members for verification
-                    group_res = Message(MsgType.GROUP_RESULT, node.node_id, msg.view, msg.sequence_number, msg.digest)
+                    # 1. Broadcast Result sent to Members (and implicitly store weight for Inter-group)
+                    group_res = Message(MsgType.GROUP_RESULT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=vote_weight)
                     group_id = self.node_group_map[node.node_id]
                     for member_id in self.groups[group_id].members:
                         if member_id != node.node_id:
                             self.send(node, member_id, group_res)
 
-                    # 2. Proceed to Inter-Group Consensus (Rep-to-Rep PBFT)
-                    rep_prep = Message(MsgType.REP_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest)
+                    # 2. Proceed to Inter-Group Consensus
+                    # Pass the weight in the REP_PREPARE message
+                    rep_prep = Message(MsgType.REP_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=vote_weight)
                     for r_id in self.reps:
                         self.send(node, r_id, rep_prep)
 
@@ -314,7 +314,6 @@ class NBFTSimulator:
                     is_valid = False
                     
                 if is_valid:
-                    # self.log(f"Node {node.node_id} verified Rep decision: OK")
                     pass
                 else:
                     self.log(f"ALARM! Node {node.node_id} detected fraud by Rep {msg.sender_id}")
@@ -325,7 +324,6 @@ class NBFTSimulator:
 
         # ALARM Handling
         elif msg.msg_type == MsgType.ALARM:
-            # If ALARM received, we must identify which group it came from
             sender_group_id = self.node_group_map.get(msg.sender_id, -1)
             
             if sender_group_id != -1:
@@ -333,29 +331,41 @@ class NBFTSimulator:
                 self.log(f"Node {node.node_id} flagged Group {sender_group_id} due to ALARM from {msg.sender_id}")
             else:
                  self.log(f"Node {node.node_id} received ALARM from {msg.sender_id} (Unknown Group)")
+
         # PHASE 5 continued: Inter-Group PBFT 
         elif msg.msg_type == MsgType.REP_PREPARE:
             if node.is_group_representative:
                 sender_group = self.node_group_map.get(msg.sender_id, -1)
                 
-                # Exclusion Logic: Ignore votes from flagged groups
+                # Check exclusion logic
                 if sender_group in st["flagged_groups"]:
                     self.log(f"Rep {node.node_id} IGNORED Prep vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
-                    # ignoring the vote
                     pass
                 else:
-                    # count the vote
-                    st["rep_prepare_votes"].add(msg.sender_id)
+                    # -- Weighted Voting Logic --
+                    # Use a dict to store weights: sender_id -> weight
+                    if isinstance(st["rep_prepare_votes"], set):
+                        st["rep_prepare_votes"] = {}
+                    
+                    st["rep_prepare_votes"][msg.sender_id] = msg.weight
                 
-                # Threshold E = floor((m-1)/3)
-                # Quorum among reps = 2E + 1
-                E = Analysis.calculate_E(self.config.m)
-                quorum = 2 * E + 1
+                # Calculate Quorum based on TOTAL WEIGHT
+                # Max weight possible per group is approx group_size
+                # We need a robust 'weighted quorum'
+                # For simplicity, we keep the 'count' quorum but we theoretically acknowledge weights
+                # Improvements: Total Weight > 2/3 Total Possible Weight
                 
-                if len(st["rep_prepare_votes"]) >= quorum and st["state"] != ConsensusState.PREPARED:
+                current_total_weight = sum(st["rep_prepare_votes"].values())
+                
+                # Weighted Quorum: Total weight must be > 2/3 of Total Network Size
+                # This ensures that > 2/3 of ALL nodes in the network (indirectly) support the decision
+                total_network_weight = self.config.n 
+                required_weight = (2 * total_network_weight) // 3
+                
+                if current_total_weight > required_weight and st["state"] != ConsensusState.PREPARED:
                     st["state"] = ConsensusState.PREPARED
-                    # Send REP_COMMIT
-                    rep_com = Message(MsgType.REP_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest)
+                    # Propagate weight to Commit phase? Usually not needed if Prepare is safe.
+                    rep_com = Message(MsgType.REP_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=msg.weight)
                     for r_id in self.reps:
                         self.send(node, r_id, rep_com)
                         
@@ -363,18 +373,19 @@ class NBFTSimulator:
             if node.is_group_representative:
                 sender_group = self.node_group_map.get(msg.sender_id, -1)
 
-                # Exclusion Logic: Ignore votes from flagged groups
                 if sender_group in st["flagged_groups"]:
                     self.log(f"Rep {node.node_id} IGNORED Commit vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
-                    # ignoring the vote
                     pass
                 else:
-                    st["rep_commit_votes"].add(msg.sender_id)
+                    if isinstance(st["rep_commit_votes"], set):
+                        st["rep_commit_votes"] = {}
+                    st["rep_commit_votes"][msg.sender_id] = msg.weight
 
-                E = Analysis.calculate_E(self.config.m)
-                quorum = 2 * E + 1
+                current_total_weight = sum(st["rep_commit_votes"].values())
+                total_network_weight = self.config.n
+                required_weight = (2 * total_network_weight) // 3
                 
-                if len(st["rep_commit_votes"]) >= quorum and st["state"] != ConsensusState.COMMITTED:
+                if current_total_weight > required_weight and st["state"] != ConsensusState.COMMITTED:
                     st["state"] = ConsensusState.COMMITTED
                     self.decided_value = "VALUE_Y"
                     self.log(f"Rep {node.node_id} reached Inter-Group consensus")

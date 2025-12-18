@@ -30,31 +30,57 @@ def plot_nbft_trace(trace, n, m):
     
     temp_nodes = [Node(i, "") for i in range(n)]
     ch = ConsistentHashing(temp_nodes, m)
-    groups, _ = ch.form_groups(0)
+    groups, node_group_map = ch.form_groups(0)
     reps = {g.representative_id for g in groups}
     global_primary = ch.get_global_primary(0)
     
+    # Sort nodes by Group ID for better visualization
+    # We want Group 0 nodes at the top, then Group 1, etc.
+    nodes_by_group = {}
+    for g in groups:
+        nodes_by_group[g.group_id] = sorted(g.members)
+        
+    sorted_node_list = []
+    for gid in sorted(nodes_by_group.keys()):
+        sorted_node_list.extend(nodes_by_group[gid])
+        
+    # Map real node ID to Y-axis position (index in sorted list)
+    y_pos_map = {node_id: idx for idx, node_id in enumerate(sorted_node_list)}
+    
     # Plot horizontal lines for nodes
-    for i in range(n):
+    current_group = -1
+    for idx, i in enumerate(sorted_node_list):
+        # Determine group for visual separation
+        group_id = node_group_map[i]
+        
+        # Add visual separator between groups
+        if group_id != current_group:
+            if current_group != -1:
+                # Draw a thin line between groups
+                 ax.hlines(y=idx-0.5, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='lightgray', linestyles='dotted', linewidth=1.0)
+            current_group = group_id
+            
         color = 'black'
         linewidth = 1
-        label = f"Node {i}"
+        label = f"Node {i} (G{group_id})"
         
         if i == global_primary:
             color = 'blue'
             linewidth = 2.5
-            label += " (Global Pri)"
-            # Draw dashed line
-            ax.hlines(y=i, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linestyles='dashed', linewidth=linewidth)
+            label += " [Global Pri]"
+            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linestyles='dashed', linewidth=linewidth)
         elif i in reps:
             color = 'black'
             linewidth = 2.5
-            label += " (Rep)"
-            ax.hlines(y=i, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linewidth=linewidth)
+            label += " [Rep]"
+            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linewidth=linewidth)
         else:
-            ax.hlines(y=i, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='gray', linewidth=0.5)
+            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='gray', linewidth=0.5)
             
-        ax.text(-0.02, i, label, fontsize=8, va='center', ha='right', transform=ax.get_yaxis_transform())
+        ax.text(-0.02, idx, label, fontsize=8, va='center', ha='right', transform=ax.get_yaxis_transform())
+    
+    # Redefine total sorted nodes count for Y-axis limit
+    total_plotted_nodes = len(sorted_node_list)
 
     # Draw Client Line
     ax.hlines(y=-1, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='green', linewidth=2.0)
@@ -78,9 +104,21 @@ def plot_nbft_trace(trace, n, m):
     for msg in trace:
         t_start = msg['time']
         t_end = msg['arrival']
-        src = msg['sender']
-        dst = msg['receiver']
+        src_id = msg['sender']
+        dst_id = msg['receiver']
         mtype = msg['type']
+        
+        # Map IDs to plotted Y positions
+        src = y_pos_map.get(src_id, src_id) # Fallback for Client (-1) or unknown
+        dst = y_pos_map.get(dst_id, dst_id)
+        
+        # Handle Client: -1 needs to be placed separately or mapped
+        # In this plot, Client is at Y = -1. Let's keep it.
+        # But if we use y_pos_map which are 0..N-1, then -1 is below.
+        # However, our y_pos_map is 0-indexed.
+        # Usually Client is visually separated. 
+        # The previous code plotted Client line at y=-1.
+        # So keeping src/dst as -1 works if we don't map it.
         
         color = type_colors.get(mtype, 'gray')
         
@@ -109,6 +147,7 @@ async def run_single_simulation(algo, n, m, bad_nodes):
         # Validation
         if algo == "NBFT":
             if m < 1: return "Error: Groups (m) must be >= 1", None
+            if int(n) < int(m): return f"Error: Number of groups (m={int(m)}) cannot exceed total nodes (n={int(n)}).", None
             pass
 
         config = RunConfig(
@@ -174,8 +213,15 @@ def load_history():
 # --- UI Definition ---
 
 with gr.Blocks(title="NBFT Simulator") as demo:
-    gr.Markdown("# NBFT Simulator")
-    gr.Markdown("Interactive platform for 'Improved Fault-Tolerant Consensus Based on the PBFT Algorithm'")
+    gr.Markdown(
+        """
+        # NBFT Simulator
+        ### Overview of Consensus Protocols
+        *   **Distributed Systems**: A network of autonomous computers that communicate to achieve a common goal. Use consensus algorithms to agree on data values.
+        *   **PBFT (Practical Byzantine Fault Tolerance)**: A robust consensus algorithm that tolerates up to *f* malicious (Byzantine) nodes in a network of *3f+1* nodes. Ideally secure but suffers from O(n²) complexity, limiting scalability.
+        *   **NBFT (Node-grouped BFT)**: An optimized algorithm that partitions the network into groups. It uses a two-level consensus mechanism (Intra-group & Inter-group) to reduce complexity to approx O(n), enabling better scalability for large networks.
+        """
+    )
     
     with gr.Tabs():
         # TAB 1: Single Run

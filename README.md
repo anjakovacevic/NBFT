@@ -1,33 +1,28 @@
-# NBFT Educational Simulation Platform
+# NBFT Simulator
 
-This project recreates the simulations from the research paper **"Improved Fault-Tolerant Consensus Based on the PBFT Algorithm"** (NBFT). It provides an interactive playground to understand how grouping nodes reduces communication complexity from O(n²) to O(n) and improves fault tolerance.
+This project implements a simulation of the NBFT (Node-grouped Byzantine Fault Tolerance) consensus algorithm proposed by the paper Improved Fault Tolerant Consensus Based on the PBFT Algorithm.
 
-## Project Structure & Paper Mapping
+## Installation
 
-The codebase is modularized to map directly to sections of the research paper:
+1. Clone or download this repository.
+2. Install the required dependencies:
 
-### Core Logic (`nbft/`)
-*   **`models.py`**: Defines standard data structures like `Node`, `Message`, and `Vote`.
-    *   *Maps to:* General System Model.
-*   **`consistent_hash.py`**: Implements the hash ring and group formation logic.
-    *   *Maps to:* **Section 3.1 (Improved Consensus Node Grouping)**. Computes $primary = H_{ring}(v)$ and groups nodes based on virtual IDs.
-*   **`pbft_sim.py`**: A simplified PBFT implementation used as a baseline.
-    *   *Maps to:* **Section 2 (PBFT Algorithm)**. Used to reproduce the O(n²) communication curves in the comparative analysis.
-*   **`nbft_sim.py`**: The core NBFT consensus algorithm implementation.
-    *   *Maps to:* **Section 3.2 (NBFT Algorithm)**. Implements Algorithm 1 (Node Decision) and Algorithm 2 (Vote-Counting) with the intra-group and inter-group phases.
-*   **`byzantine.py`**: Defines malicious node behaviors.
-    *   *Maps to:* **Section 4.1 (Experimental Setup)**. Models non-primary flaws, data tampering, and silent failures to test robustness.
-*   **`analysis.py`**: Contains the mathematical formulas for fault tolerance and complexity.
-    *   *Maps to:* **Section 4.2 (Fault Tolerance Analysis)** and **Section 4.3 (Communication Complexity)**. Calculates $P_{fail}$, $R$, $E$, and $w$.
+```bash
+pip install -r requirements.txt
+```
 
-### Infrastructure
-*   **`app.py`**: The Gradio web interface entry point. Allows students to visualize the algorithms.
-    *   *Educational Goal:* Interactive learning and parameter sweeping.
-*   **`db/`**: SQLite database helpers to save and load experiment runs.
-    *   *Educational Goal:* Reproducibility of experiments.
-*   **`experiments/`**: Batch runners for generating the data used in the paper's plots.
-    *   *Maps to:* **Section 5 (Performance Analysis)**. Recreates Figures 4, 5, and 6.
+## Running the Simulation
 
-## Getting Started
+Start the application by running:
 
-1.  So far, the structure is created. Run `app.py` after installation (instructions TBD).
+```bash
+python app.py
+```
+
+This will launch a local web server (Gradio interface). Open the provided URL (typically `http://127.0.0.1:7860`) in your browser to interact with the simulator.
+
+## Features
+
+- **Single Simulation**: Run individual consensus rounds, visualize message flow, and inspect logs.
+- **Batch Experiments**: Run multiple trials to analyze success rates and communication complexity with varying numbers of faulty nodes.
+- **History**: View results from previous runs.

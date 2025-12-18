@@ -16,6 +16,14 @@ class Analysis:
         return math.floor((n - 1) / m)
 
     @staticmethod
+    def calculate_avg_R(n: int, m: int) -> float:
+        """
+        Average nodes per group (simple average).
+        """
+        if m == 0: return 0.0
+        return n / m
+
+    @staticmethod
     def calculate_w(R: int) -> int:
         """
         Fault tolerance threshold within a group.

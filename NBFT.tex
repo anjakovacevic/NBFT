@@ -152,29 +152,89 @@ Struktura projekta podeljena je na sledeće ključne celine:
     Ovaj sloj koristi Python \texttt{dataclasses} za efikasno modelovanje nepromenljivih struktura podataka.
     
     \item \textbf{Sloj poslovne logike (\texttt{nbft/})}:
-    Predstavlja srž aplikacije gde su implementirani algoritmi:
-    \begin{itemize}
-        \item \texttt{nbft\_sim.py}: Implementira klasu \texttt{NBFTSimulator} koja upravlja stanjem automata čvorova, obradu poruka i tranziciju pogleda (view change).
-        \item \texttt{consistent\_hash.py}: Realizuje logiku formiranja grupa i izbora predstavnika. Iako konceptualno zasnovan na konzistentnom heširanju, u implementaciji se koristi determinističko mešanje (seeded shuffle) kako bi se osiguralo da svi čvorovi imaju identičnu sliku topologije u svakom pogledu.
-        \item \texttt{byzantine.py}: Inkapsulira logiku zlonamernog ponašanja, omogućavajući injektovanje različitih strategija napada (npr. \textit{bad\_aggregator}).
-    \end{itemize}
+    Ovaj sloj obuhvata algoritamske module sistema. Klasa NBFTSimulator, formiranje grupa i ponašanje vizantijskih čvorova, detaljno su analizirani u narednom poglavlju.
     
     \item \textbf{Prezentacioni sloj (\texttt{app.py})}:
     Za interakciju sa korisnikom odabrana je biblioteka \textbf{Gradio}. Ona omogućava brzu generaciju modernog web GUI-a gde korisnici mogu lako da podešavaju parametre simulacije ($N, M, f$) i pokreću eksperimente. Implementirane su tri glavne funkcionalnosti:
     \begin{enumerate}
-        \item \textbf{Single Simulation}: Vizuelizacija toka poruka (Message Sequence Chart) korišćenjem biblioteke \textbf{Matplotlib}.
+        \item \textbf{Single Simulation}: Vizuelizacija toka poruka ( Message Sequence Chart) korišćenjem biblioteke \textbf{Matplotlib}.
         \item \textbf{Batch Experiments}: Masovno pokretanje simulacija radi analize uticaja broja vizantijskih čvorova na uspeh i performanse.
         \item \textbf{Saved History}: Pregled istorijskih rezultata.
     \end{enumerate}
 
     \item \textbf{Sloj za perzistenciju (\texttt{db/repository.py})}:
-    Za trajno čuvanje rezultata eksperimenata koristi se \textbf{SQLite} baza podataka. Repozitorijum omogućava čuvanje ishoda svake simulacije radi naknadne analize i generisanja zbirnih izveštaja.
+    Za trajno čuvanje rezultata eksperimenata koristi se \textbf{SQLite} baza podataka.
 \end{itemize}
 
-\subsection{Model asinhronog izvršavanja}
-Simulacija koristi \texttt{asyncio} biblioteku za modelovanje konkurentnosti.
-Svaki čvor u sistemu funkcioniše kao nezavisna asinhrona rutina (coroutine), koja komunicira sa drugima putem asinhronih kanala.
-Ovakav pristup omogućava verodostojnu simulaciju mrežnih kašnjenja i redosleda pristizanja poruka bez potrebe za korišćenjem "teških" nitnih (thread) procesa.
+\subsection{Algoritam formiranja grupa (Consistent Hashing)}
+Jedna od ključnih komponenti NBFT sistema je determinističko, ali nepredvidivo formiranje grupa. Implementirani modul \texttt{consistent\_hash.py} oslanja se na koncept konzistentnog heširanja na prstenu, uz dodatak mehanizma za balansiranje opterećenja (\textit{Bounded Load Balancing}).
+
+Proces formiranja grupa odvija se kroz sledeće korake:
+
+\begin{enumerate}
+    \item \textbf{Mapiranje grupa}: Identifikatori grupa ($ID_G \in [0, m-1]$) se heširaju zajedno sa trenutnim brojem pogleda ($v$) kako bi se dobile njihove pozicije na virtualnom prstenu veličine $2^{32}$. Ovo osigurava da se raspored grupa menja u svakoj iteraciji (View Change).
+    \[ Pos(G_i) = Hash(v || i) \mod 2^{32} \]
+    
+    \item \textbf{Mapiranje čvorova}: Svaki čvor ($ID_N$) se mapira na fiksnu poziciju na prstenu.
+    \[ Pos(N_j) = Hash(N_j) \mod 2^{32} \]
+    
+    \item \textbf{Bounded Load Dodela}: Kako bi se izbegla neranomerna raspodela čvorova (koja je česta kod standardnog konzistentnog heširanja sa malim brojem ključeva), uvodi se kapacitet grupe $C_{max} = \lceil N/M \rceil + 1$.
+    Algoritam iterira kroz sortirane pozicije čvorova i dodeljuje ih prvoj "narednoj" grupi na prstenu koja nije popunila svoj kapacitet. Ukoliko je najbliža grupa puna, pretraga se nastavlja ciklično dok se ne pronađe slobodno mesto.
+    
+    \item \textbf{Izbor predstavnika}: Unutar svake grupe, za predstavnika se bira onaj čvor čija je pozicija na prstenu "najbliža" virtualnoj tački grupe (računajući u smeru suprotnom od kazaljke na satu), čime se simulira topološka bliskost.
+\end{enumerate}
+
+Pseudokod ovog postupka prikazan je u Algoritmu \ref{alg:ch}.
+
+\begin{algorithm}
+\caption{Formiranje grupa sa Bounded Load Hashing-om}
+\label{alg:ch}
+\begin{algorithmic}[1]
+\Function{FormGroups}{$Nodes, m, View$}
+    \State $Cap \gets \lceil |Nodes|/m \rceil + 1$
+    \State $Ring \gets 2^{32}$
+    \State $Groups \gets \emptyset$
+    \State
+    \For{$i \gets 0$ \textbf{to} $m-1$}
+        \State $GPos[i] \gets Hash(View || i) \mod Ring$
+    \EndFor
+    \State Sort $GPos$
+    \State
+    \For{$n \in Nodes$}
+        \State $NPos \gets Hash(n.id) \mod Ring$
+        \State $BestG \gets FindNextClockwise(NPos, GPos)$
+        \While{$Size(Groups[BestG]) \ge Cap$}
+             \State $BestG \gets NextClockwise(BestG, GPos)$
+        \EndWhile
+        \State Add $n$ to $Groups[BestG]$
+    \EndFor
+    \State \Return $Groups$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Model NBFT algotima}
+Klasa \texttt{NBFTSimulator} (\texttt{nbft\_sim.py}) predstavlja centralnu komponentu sistema koja orkestrira celokupan životni ciklus mrežne simulacije.
+Implementacija se oslanja na \texttt{asyncio} biblioteku za modelovanje asinhronog izvršavanja, gde svaki čvor funkcioniše kao nezavisna asinhrona rutina (coroutine). Ovakav pristup omogućava verodostojnu simulaciju konkurentnosti, mrežnih kašnjenja i redosleda pristizanja poruka bez potrebe za korišćenjem resursno zahtevnih niti (threads).
+
+Srž logike konsenzusa implementirana je kroz metodu \texttt{\_handle\_message}, koja deluje kao mašina stanja (State Machine) za svaki čvor. Stanja kroz koja čvor prolazi uključuju:
+\begin{enumerate}
+    \item \texttt{IDLE}: Početno stanje, čekanje na predlog.
+    \item \texttt{PRE\_PREPARED}: Lokalni konsenzus unutar grupe je postignut.
+    \item \texttt{PREPARED}: Globalni konsenzus (među predstavnicima) je u fazi pripreme.
+    \item \texttt{COMMITTED}: Odluka je finalizovana i spremna za izvršenje.
+\end{enumerate}
+Simulator takođe upravlja tranzicijom pogleda (\textit{View Change}) u slučaju isteka vremenskog ograničenja (timeout), osiguravajući živost sistema.
+
+\subsection{Modelovanje Vizantijskog Ponašanja}
+Testiranje otpornosti sistema vrši se pomoću klase \texttt{ByzantineBehavior} (\texttt{byzantine.py}), koja presreće izlazne poruke kompromitovanih čvorova i modifikuje ih prema zadatoj strategiji.
+Implementirane strategije napada uključuju:
+\begin{itemize}
+    \item \textbf{Silent}: Čvor prestaje da šalje poruke, simulirajući otkaz (Crash Fault) ili namerno ćutanje.
+    \item \textbf{Equivocation}: Čvor šalje različite (konfliktne) informacije različitim primaocima (npr. validan potpis jednima, nevalidan drugima).
+    \item \textbf{Bad Aggregator}: Specifičan napad za NBFT predstavnike, gde korumpirani predstavnik šalje lažnu informaciju o ishodu glasanja u svojoj grupi (npr. \texttt{CORRUPTED\_AGGREGATE}), pokušavajući da prevari globalni konsenzus.
+    \item \textbf{Random Noise}: Slanje nasumičnih, nevalidnih podataka radi testiranja robusnosti parsera poruka.
+\end{itemize}
 
 \subsection{Implementacija mehanizama zaštite}
 Poseban fokus u implementaciji stavljen je na robusnost sistema:

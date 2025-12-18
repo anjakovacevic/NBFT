@@ -92,10 +92,17 @@ class NBFTSimulator:
             if self.nodes[rep_id].is_byzantine:
                 self.nodes[rep_id].byzantine_strategy = "bad_aggregator"
 
-    def log(self, msg: str):
-        self.logs.append(f"[{self.global_time:.2f}] {msg}")
+    def log(self, msg: str, source: str = "simulation", level: str = "INFO"):
+        if not hasattr(self, 'verbose_logging'): self.verbose_logging = True # Default or set in init
+        
+        # In Single Simulation, we want detailed logs.
+        # Format: YYYY-MM-DD HH:MM:SS,fff - source - LEVEL - msg
+        formatted_msg = f"{level} - {source} - {msg}"
+        self.logs.append(formatted_msg)
 
     def send(self, sender: Node, target_id: int, msg: Message):
+        # Log the send event if verbose
+        # self.log(f"[{msg.msg_type.name}] Sent to node-{target_id}: {msg.digest[:10]}...", source=f"node-{sender.node_id}")
         asyncio.create_task(self._async_send(sender, target_id, msg))
 
     async def _async_send(self, sender: Node, target_id: int, msg: Message):
@@ -140,7 +147,7 @@ class NBFTSimulator:
         
         cloned = Message(final_msg.msg_type, final_msg.sender_id, final_msg.view, 
                          final_msg.sequence_number, final_msg.digest, final_msg.content, 
-                         signature=signature)
+                         signature=signature, weight=final_msg.weight)
         
         self.message_count += 1
         self.phase_counts[msg.msg_type.name] += 1
@@ -241,21 +248,28 @@ class NBFTSimulator:
         if key not in self.node_states[node.node_id]:
             self.node_states[node.node_id][key] = {
                 "group_votes": set(), # For reps collecting member votes
-                "rep_prepare_votes": set(), # For inter-group PBFT
-                "rep_commit_votes": set(),
+                "rep_prepare_votes": {}, # For inter-group PBFT: sender_id -> weight
+                "rep_commit_votes": {}, # sender_id -> weight
                 "flagged_groups": set(), # Store group_ids with active alarms
-                "state": ConsensusState.IDLE
+                "state": ConsensusState.IDLE,
+                "intra_group_done": False # Track if we finished local group consensus, ensures every Representative always broadcasts its vote once its local group reaches consensus
             }
         
         st = self.node_states[node.node_id][key]
         
         # PHASE 1 & 2: Rep Pre-Prepare & Group Pre-Prepare 
+        # PHASE 1 & 2: Rep Pre-Prepare & Group Pre-Prepare 
         if msg.msg_type == MsgType.REP_PRE_PREPARE:
             if node.is_group_representative: # check just in case
+                # Store the proposal value
+                st["proposal_value"] = msg.content
+                
                 # Rep broadcasts to its group members
                 # "Algorithm 1" logic
                 group_id = self.node_group_map[node.node_id]
                 group = self.groups[group_id]
+                
+                self.log(f"[IN_PREPARE1 | GROUP {group_id}] Sent InPrepare (value={msg.content})", source=f"node-{node.node_id}")
                 
                 group_msg = Message(MsgType.GROUP_PRE_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, msg.content)
                 
@@ -267,10 +281,17 @@ class NBFTSimulator:
         elif msg.msg_type == MsgType.GROUP_PRE_PREPARE:
             # Ordinary node validates and sends vote back to Rep
             # "Algorithm 1: Node Decision Broadcast"
-            vote_msg = Message(MsgType.GROUP_VOTE, node.node_id, msg.view, msg.sequence_number, msg.digest)
+            
+            # Store the proposal value
+            st["proposal_value"] = msg.content
+            
             # Find my rep
             # Simplified: The sender of the GROUP_PRE_PREPARE is the rep
             rep_id = msg.sender_id
+            
+            self.log(f"[SIGN | GROUP ?] Signed '{msg.content}'", source=f"node-{node.node_id}")
+            
+            vote_msg = Message(MsgType.GROUP_VOTE, node.node_id, msg.view, msg.sequence_number, msg.digest)
             self.send(node, rep_id, vote_msg)
             
         # PHASE 4: Rep Collects Votes (Algorithm 2) 
@@ -285,11 +306,15 @@ class NBFTSimulator:
                 
                 threshold = current_group_size - w
                 
-                if len(st["group_votes"]) >= threshold and st["state"] == ConsensusState.IDLE:
-                    st["state"] = ConsensusState.PRE_PREPARED
-                    # -- Weighted Voting Implementation --
+                if len(st["group_votes"]) >= threshold and not st["intra_group_done"]:
+                    st["intra_group_done"] = True
+                    if st["state"] == ConsensusState.IDLE:
+                         st["state"] = ConsensusState.PRE_PREPARED
+                    
+                    # Weighted Voting Implementation
                     # Weight = number of valid votes collected from group members
                     vote_weight = len(st["group_votes"])
+                    st["my_weight"] = vote_weight # Store for later use
                     self.log(f"Rep {node.node_id} reached Intra-Group consensus (votes: {vote_weight}, weight: {vote_weight})")
                     
                     # 1. Broadcast Result sent to Members (and implicitly store weight for Inter-group)
@@ -301,7 +326,9 @@ class NBFTSimulator:
 
                     # 2. Proceed to Inter-Group Consensus
                     # Pass the weight in the REP_PREPARE message
-                    rep_prep = Message(MsgType.REP_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=vote_weight)
+                    # PROPOSAL VALUE is passed here to ensure Reps know WHAT they are voting on
+                    prop_val = st.get("proposal_value", None)
+                    rep_prep = Message(MsgType.REP_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, content=prop_val, weight=vote_weight)
                     for r_id in self.reps:
                         self.send(node, r_id, rep_prep)
 
@@ -337,6 +364,9 @@ class NBFTSimulator:
             if node.is_group_representative:
                 sender_group = self.node_group_map.get(msg.sender_id, -1)
                 
+                my_group_id = self.node_group_map[node.node_id]
+                self.log(f"[IN_PREPARE2 | GROUP {my_group_id} | REPRESENTATIVE] Received from node-{msg.sender_id}: {msg.content or msg.digest[:10]}", source=f"node-{node.node_id}")
+
                 # Check exclusion logic
                 if sender_group in st["flagged_groups"]:
                     self.log(f"Rep {node.node_id} IGNORED Prep vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
@@ -344,9 +374,6 @@ class NBFTSimulator:
                 else:
                     # -- Weighted Voting Logic --
                     # Use a dict to store weights: sender_id -> weight
-                    if isinstance(st["rep_prepare_votes"], set):
-                        st["rep_prepare_votes"] = {}
-                    
                     st["rep_prepare_votes"][msg.sender_id] = msg.weight
                 
                 # Calculate Quorum based on TOTAL WEIGHT
@@ -365,7 +392,12 @@ class NBFTSimulator:
                 if current_total_weight > required_weight and st["state"] != ConsensusState.PREPARED:
                     st["state"] = ConsensusState.PREPARED
                     # Propagate weight to Commit phase? Usually not needed if Prepare is safe.
-                    rep_com = Message(MsgType.REP_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=msg.weight)
+                    # Use MY weight, not the sender's weight
+                    my_weight = st.get("my_weight", 1) 
+                    rep_com = Message(MsgType.REP_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=my_weight)
+                    
+                    self.log(f"[GLOBAL] Received aggregate from group {sender_group}: rep=node-{msg.sender_id}, value={msg.content}, valid_sigs={msg.weight}", source="simulation")
+
                     for r_id in self.reps:
                         self.send(node, r_id, rep_com)
                         
@@ -377,8 +409,6 @@ class NBFTSimulator:
                     self.log(f"Rep {node.node_id} IGNORED Commit vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
                     pass
                 else:
-                    if isinstance(st["rep_commit_votes"], set):
-                        st["rep_commit_votes"] = {}
                     st["rep_commit_votes"][msg.sender_id] = msg.weight
 
                 current_total_weight = sum(st["rep_commit_votes"].values())
@@ -387,6 +417,27 @@ class NBFTSimulator:
                 
                 if current_total_weight > required_weight and st["state"] != ConsensusState.COMMITTED:
                     st["state"] = ConsensusState.COMMITTED
+                    
+                    # Use the stored proposal value, or fall back to the message content if present
+                    final_value = st.get("proposal_value", msg.content) or "Unknown_Value"
+                    self.decided_value = final_value
+                    
+                    self.log(f"Rep {node.node_id} reached Inter-Group consensus")
+                    
+                    if not self.consensus_reached:
+                         # Log ONLY ONCE for the global success
+                         self.log(f"[GLOBAL] Consensus reached: value='{self.decided_value}'", source="simulation")
+                    
+                    self.consensus_reached = True
+                    self.consensus_event.set()
+                    
+                    # Broadcast Final Decision?
+                    dec_msg = Message(MsgType.FINAL_DECISION, node.node_id, msg.view, msg.sequence_number, msg.digest, content=final_value)
+                    # Send to everyone
+                    for n in self.nodes:
+                         self.send(node, n.node_id, dec_msg)
+                    pass
+
                     self.decided_value = "VALUE_Y"
                     self.log(f"Rep {node.node_id} reached Inter-Group consensus")
                     
@@ -394,11 +445,7 @@ class NBFTSimulator:
                     self.send(node, -1, Message(MsgType.REPLY, node.node_id, msg.view, msg.sequence_number, msg.digest))
                     
                     # PHASE 6: Broadcast Decision to Group 
-                    final_msg = Message(MsgType.FINAL_DECISION, node.node_id, msg.view, msg.sequence_number, msg.digest)
-                    group_id = self.node_group_map[node.node_id]
-                    for member_id in self.groups[group_id].members:
-                        self.send(node, member_id, final_msg)
-                        
+
         # PHASE 6 continued: Members accept decision 
         elif msg.msg_type == MsgType.FINAL_DECISION:
              self.decided_value = "VALUE_Y"

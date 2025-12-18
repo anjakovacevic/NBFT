@@ -217,13 +217,18 @@ Pseudokod ovog postupka prikazan je u Algoritmu \ref{alg:ch}.
 Klasa \texttt{NBFTSimulator} (\texttt{nbft\_sim.py}) predstavlja centralnu komponentu sistema koja orkestrira celokupan životni ciklus mrežne simulacije.
 Implementacija se oslanja na \texttt{asyncio} biblioteku za modelovanje asinhronog izvršavanja, gde svaki čvor funkcioniše kao nezavisna asinhrona rutina (coroutine). Ovakav pristup omogućava verodostojnu simulaciju konkurentnosti, mrežnih kašnjenja i redosleda pristizanja poruka bez potrebe za korišćenjem resursno zahtevnih niti (threads).
 
-Srž logike konsenzusa implementirana je kroz metodu \texttt{\_handle\_message}, koja deluje kao mašina stanja (State Machine) za svaki čvor. Stanja kroz koja čvor prolazi uključuju:
+Srž logike konsenzusa implementirana je kroz metodu \texttt{\_handle\_message}, koja deluje kao mašina stanja (State Machine). Proces konsenzusa je podeljen u sledeće faze, prateći hijerarhijsku strukturu predloženu u radu:
+
 \begin{enumerate}
-    \item \texttt{IDLE}: Početno stanje, čekanje na predlog.
-    \item \texttt{PRE\_PREPARED}: Lokalni konsenzus unutar grupe je postignut.
-    \item \texttt{PREPARED}: Globalni konsenzus (među predstavnicima) je u fazi pripreme.
-    \item \texttt{COMMITTED}: Odluka je finalizovana i spremna za izvršenje.
+    \item \textbf{preprepare1}: Klijent šalje zahtev čvoru 0 (Global Primary), koji ga potom prosleđuje (broadcast) svim ostalim čvorovima u mreži.
+    \item \textbf{in-prepare1}: Svaki čvor šalje poruku svom predstavniku grupe (Representative), informišući ga o zahtevu.
+    \item \textbf{in-prepare2}: Nakon prikupljanja dovoljnog broja glasova unutar grupe, predstavnik šalje povratnu informaciju svim čvorovima u svojoj mapi.
+    \item \textbf{out-prepare}: Predstavnici svih grupa razmenjuju ponderisane glasove (weights) međusobno radi postizanja međugrupnog dogovora.
+    \item \textbf{commit}: Čim se ostvari globalni ponderisani kvorum ($2n/3$), predstavnici šalju potvrdu čvoru 0 (\textit{Replica 0}), koji deluje kao globalni koordinator.
+    \item \textbf{preprepare2}: Čvor 0 prosleđuje finalnu odluku svim čvorovima u mrežni sistem.
+    \item \textbf{Reply}: Svi čvorovi koji su primili finalnu odluku šalju odgovor (\textit{Reply}) direktno klijentu.
 \end{enumerate}
+
 Simulator takođe upravlja tranzicijom pogleda (\textit{View Change}) u slučaju isteka vremenskog ograničenja (timeout), osiguravajući živost sistema.
 
 \subsection{Modelovanje Vizantijskog Ponašanja}
@@ -241,7 +246,8 @@ Poseban fokus u implementaciji stavljen je na robusnost sistema:
 \begin{itemize}
     \item \textbf{Watchdog mehanizam}: Implementiran je sistem nadzora gde čvorovi unutar grupe verifikuju odluke svojih predstavnika. U slučaju detekcije nevalidne agregacije (npr. neispravan potpis), emituje se globana \texttt{ALARM} poruka.
     \item \textbf{Izolacija neispravnih grupa}: Tokom međugrupne komunikacije, predstavnici ignorišu glasove koji dolaze iz grupa označenih kao kompromitovane (one za koje je primljen validan alarm).
-    \item \textbf{Implementacija ponderisanog glasanja}: Uvedeno je dinamičko računanje težine glasa predstavnika. Svaki \texttt{Representative} uz svoju odluku prilaže težinu ($w$) koja odgovara broju validnih potpisa prikupljenih od članova svoje grupe tokom lokalnog konsenzusa. Globalni kvorum se ne računa prostim brojanjem predstavnika, već sumiranjem njihovih težina, pri čemu je za odluku neophodno prikupiti podršku $> 2n/3$ ukupne "mrežne težine".
+    \item \textbf{Threshold Vote-Counting Model}: Implementiran je dinamički model brojanja glasova koji minimizuje uticaj malicioznih grupa na globalni konsenzus. Ukoliko predstavnik prikupi dovoljan broj potpisa unutar svoje grupe ($\ge R - w$, gde je $R$ veličina grupe), njegov glas u \texttt{out-prepare} fazi nosi težinu pune veličine grupe ($R$). U suprotnom, glas nosi oslabljenu težinu jednaku isključivo broju prikupljenih validnih potpisa. Globalni kvorum se dostiže kada suma težina pređe prag $2n/3$ ukupne mrežne populacije.
+    \item \textbf{Klijentski prag konsenzusa}: U skladu sa teorijskim modelom, klijentski terminal (Customer Service Terminal) potvrđuje uspešnost operacije tek nakon što primi $(n-1)/2 + 1$ identičnih \texttt{Reply} poruka od različitih replika u mreži.
 \end{itemize}
 
 \subsubsection{Simulacija mrežnog saobraćaja}

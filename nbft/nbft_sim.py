@@ -190,39 +190,27 @@ class NBFTSimulator:
 
             # Start Consensus Protocol for this View
             gp = self.nodes[self.global_primary_id]
-            req_msg = Message(MsgType.REP_PRE_PREPARE, gp.node_id, current_view, 1, "digest_nbft", "VALUE_Y")
             
-            # Global Primary sends to Reps
-            for rep_id in self.reps:
-                self.send(gp, rep_id, req_msg)
+            # PHASE: preprepare1
+            # 1. Client sends REQUEST to Node 0 (Global Primary)
+            client_req = Message(MsgType.REQUEST, -1, current_view, 1, "digest_nbft", "VALUE_Y")
+            self.send(Node(-1, ""), 0, client_req)
                 
             try:
                 # Wait for consensus or timeout
-                # 2.0 seconds timeout per view
-                await asyncio.wait_for(self.consensus_event.wait(), timeout=2.0)
+                # Customer terminal threshold: (n-1)/2 + 1
+                await asyncio.wait_for(self.consensus_event.wait(), timeout=3.0)
                 if self.consensus_reached:
-                    self.log(f"Consensus reached in View {current_view}")
+                    client_threshold = ((self.config.n - 1) // 2) + 1
+                    self.log(f"Consensus reached (Client Threshold: {client_threshold} replies received)")
                     break
-                    
             except asyncio.TimeoutError:
-                self.log(f"View {current_view} TIMEOUT. Initiating View Change...")
-                
-                # 1. Broadcast VIEW_CHANGE
-                # Every node broadcasts 'VIEW_CHANGE'
-                vc_msg = Message(MsgType.VIEW_CHANGE, 0, current_view + 1, 0, "params")
-                for n in self.nodes:
-                     # Simulate broadcast to the 'Next Primary' (simplified)
-                     # In full PBFT, this goes to everyone.
-                     # We'll just trace 1 msg per node to indicate traffic
-                     next_prim_id = self.ch.get_global_primary(current_view + 1)
-                     self.send(n, next_prim_id, Message(MsgType.VIEW_CHANGE, n.node_id, current_view + 1, 0, ""))
-                
-                # 2. Wait a bit for View Change processing
-                await asyncio.sleep(0.1)
-                
+                self.log(f"View {current_view} TIMEOUT.")
                 current_view += 1
-                if current_view >= max_views:
-                    self.log("Max views reached. Simulation failed.")
+
+        if self.consensus_reached:
+            # Short grace period to let final decision/reply messages finish tracing
+            await asyncio.sleep(0.1)
 
         duration = time.time() - self.start_time
         
@@ -237,221 +225,177 @@ class NBFTSimulator:
             byzantine_nodes=[n.node_id for n in self.nodes if n.is_byzantine]
         )
 
+    async def _async_send_from_client(self, target_id: int, msg: Message):
+        """Special helper to simulate client broadcast in preprepare1."""
+        latency = 0.001
+        await asyncio.sleep(latency)
+        current_time = time.time() - self.start_time
+        self.trace.append({
+            "time": current_time - latency,
+            "arrival": current_time,
+            "sender": -1,
+            "receiver": target_id,
+            "type": msg.msg_type.name
+        })
+        self._handle_message(self.nodes[target_id], msg)
+
     def _handle_message(self, node: Node, msg: Message):
-        # 0. SECURITY CHECK: Verify Signature
-        if msg.signature:
-            is_valid = Message.verify(msg.digest, msg.signature, msg.sender_id)
-            if not is_valid:
-                return # Drop message
-                
         key = (msg.view, msg.sequence_number)
         if key not in self.node_states[node.node_id]:
             self.node_states[node.node_id][key] = {
-                "group_votes": set(), # For reps collecting member votes
-                "rep_prepare_votes": {}, # For inter-group PBFT: sender_id -> weight
-                "rep_commit_votes": {}, # sender_id -> weight
-                "flagged_groups": set(), # Store group_ids with active alarms
+                "in_prepare1_votes": set(), # Rep collecting from members
+                "out_prepare_votes": {},    # Rep collecting from other nodes (NodeID -> Weight)
+                "processed_sources": set(), # Prevent double counting from same groups
+                "commit_votes": set(),      # Node 0 collecting from Reps
                 "state": ConsensusState.IDLE,
-                "intra_group_done": False # Track if we finished local group consensus, ensures every Representative always broadcasts its vote once its local group reaches consensus
+                "intra_group_done": False,
+                "inter_group_done": False,
+                "watchdog_triggered": False,
+                "proposal_value": None
             }
         
         st = self.node_states[node.node_id][key]
         
-        # PHASE 1 & 2: Rep Pre-Prepare & Group Pre-Prepare 
-        # PHASE 1 & 2: Rep Pre-Prepare & Group Pre-Prepare 
-        if msg.msg_type == MsgType.REP_PRE_PREPARE:
-            if node.is_group_representative: # check just in case
-                # Store the proposal value
+        # 0. REQUEST (Client -> Node 0)
+        if msg.msg_type == MsgType.REQUEST:
+            if node.node_id == 0:
+                self.log(f"[REQUEST] Global Primary received client request. Broadcasting PREPREPARE1 to all nodes.", source="node-0")
                 st["proposal_value"] = msg.content
-                
-                # Rep broadcasts to its group members
-                # "Algorithm 1" logic
-                group_id = self.node_group_map[node.node_id]
-                group = self.groups[group_id]
-                
-                self.log(f"[IN_PREPARE1 | GROUP {group_id}] Sent InPrepare (value={msg.content})", source=f"node-{node.node_id}")
-                
-                group_msg = Message(MsgType.GROUP_PRE_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, msg.content)
-                
-                # Send to all members (including self? handled by logic, but usually self-vote is implicit)
-                for member_id in group.members:
-                    self.send(node, member_id, group_msg)
-                    
-        # PHASE 3: Group Members Vote 
-        elif msg.msg_type == MsgType.GROUP_PRE_PREPARE:
-            # Ordinary node validates and sends vote back to Rep
-            # "Algorithm 1: Node Decision Broadcast"
-            
-            # Store the proposal value
+                broadcast_msg = Message(MsgType.PREPREPARE1, 0, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+                for other_node in self.nodes:
+                    self.send(node, other_node.node_id, broadcast_msg)
+
+        # 1. preprepare1 (Node 0 -> All Nodes)
+        elif msg.msg_type == MsgType.PREPREPARE1:
             st["proposal_value"] = msg.content
             
-            # Find my rep
-            # Simplified: The sender of the GROUP_PRE_PREPARE is the rep
-            rep_id = msg.sender_id
+            # Every node (including node 0 once it has the message) sends in-prepare1 to its group representative
+            rep_id = self.groups[self.node_group_map[node.node_id]].representative_id
+            self.log(f"[preprepare1] Received broadcast. Sending in-prepare1 to Rep {rep_id}", source=f"node-{node.node_id}")
+            in_prep1 = Message(MsgType.IN_PREPARE1, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+            self.send(node, rep_id, in_prep1)
             
-            self.log(f"[SIGN | GROUP ?] Signed '{msg.content}'", source=f"node-{node.node_id}")
-            
-            vote_msg = Message(MsgType.GROUP_VOTE, node.node_id, msg.view, msg.sequence_number, msg.digest)
-            self.send(node, rep_id, vote_msg)
-            
-        # PHASE 4: Rep Collects Votes (Algorithm 2) 
-        elif msg.msg_type == MsgType.GROUP_VOTE:
+            # Algorithm 1: Watchdog Timer
+            # Start a watchdog to wait for in-prepare2 from the Representative
+            asyncio.create_task(self._watchdog_timer(node, msg, rep_id))
+
+        # 2. in-prepare1 (Node -> Representative)
+        elif msg.msg_type == MsgType.IN_PREPARE1:
             if node.is_group_representative:
-                st["group_votes"].add(msg.sender_id)
+                st["in_prepare1_votes"].add(msg.sender_id)
+                st["proposal_value"] = msg.content
                 
-                # Calculate Threshold w
                 group_id = self.node_group_map[node.node_id]
-                current_group_size = self.groups[group_id].size
-                w = Analysis.calculate_w(current_group_size)
+                group_size = self.groups[group_id].size
+                threshold = group_size - Analysis.calculate_w(group_size)
                 
-                threshold = current_group_size - w
-                
-                if len(st["group_votes"]) >= threshold and not st["intra_group_done"]:
-                    st["intra_group_done"] = True
-                    if st["state"] == ConsensusState.IDLE:
-                         st["state"] = ConsensusState.PRE_PREPARED
+                if len(st["in_prepare1_votes"]) > 0 and not st["intra_group_done"]:
+                    # Threshold Vote-Counting Model (Section III.D)
+                    # If valid signatures >= R - w, count as full group size (R)
+                    # Otherwise, count literal signatures
+                    current_votes = len(st["in_prepare1_votes"])
+                    if current_votes >= threshold:
+                        vote_weight = group_size
+                        st["intra_group_done"] = True # Reached full local consensus
+                        self.log(f"[in-prepare1] Group {group_id} reached FULL threshold. Weight={vote_weight}", source=f"node-{node.node_id}")
+                    else:
+                        vote_weight = current_votes
+                        self.log(f"[in-prepare1] Group {group_id} sending partial votes. Weight={vote_weight}", source=f"node-{node.node_id}")
                     
-                    # Weighted Voting Implementation
-                    # Weight = number of valid votes collected from group members
-                    vote_weight = len(st["group_votes"])
-                    st["my_weight"] = vote_weight # Store for later use
-                    self.log(f"Rep {node.node_id} reached Intra-Group consensus (votes: {vote_weight}, weight: {vote_weight})")
-                    
-                    # 1. Broadcast Result sent to Members (and implicitly store weight for Inter-group)
-                    group_res = Message(MsgType.GROUP_RESULT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=vote_weight)
-                    group_id = self.node_group_map[node.node_id]
+                    # in-prepare2: Representative -> All group nodes (Confirmation)
+                    in_prep2 = Message(MsgType.IN_PREPARE2, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
                     for member_id in self.groups[group_id].members:
-                        if member_id != node.node_id:
-                            self.send(node, member_id, group_res)
-
-                    # 2. Proceed to Inter-Group Consensus
-                    # Pass the weight in the REP_PREPARE message
-                    # PROPOSAL VALUE is passed here to ensure Reps know WHAT they are voting on
-                    prop_val = st.get("proposal_value", None)
-                    rep_prep = Message(MsgType.REP_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, content=prop_val, weight=vote_weight)
-                    for r_id in self.reps:
-                        self.send(node, r_id, rep_prep)
-
-        # Verify the result
-        elif msg.msg_type == MsgType.GROUP_RESULT:
-            if not node.is_byzantine:
-                # Watchdog Check
-                is_valid = True 
-                if msg.digest == "CORRUPTED_AGGREGATE":
-                    is_valid = False
+                        self.send(node, member_id, in_prep2)
                     
-                if is_valid:
-                    pass
-                else:
-                    self.log(f"ALARM! Node {node.node_id} detected fraud by Rep {msg.sender_id}")
-                    alarm_msg = Message(MsgType.ALARM, node.node_id, msg.view, msg.sequence_number, msg.digest, "Fraud detected")
-                    # Broadcast alarm to everyone
-                    for n in self.nodes:
-                         self.send(node, n.node_id, alarm_msg)
+                    # out-prepare: Representatives cross-talk with assigned weight
+                    out_prep = Message(MsgType.OUT_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content, weight=vote_weight)
+                    for r_id in self.reps:
+                        self.send(node, r_id, out_prep)
 
-        # ALARM Handling
-        elif msg.msg_type == MsgType.ALARM:
-            sender_group_id = self.node_group_map.get(msg.sender_id, -1)
+        # 3. in-prepare2 (Representative -> Group Nodes)
+        elif msg.msg_type == MsgType.IN_PREPARE2:
+            # Algorithm 1 verification
+            is_consistent = (msg.content == st["proposal_value"])
             
-            if sender_group_id != -1:
-                st["flagged_groups"].add(sender_group_id)
-                self.log(f"Node {node.node_id} flagged Group {sender_group_id} due to ALARM from {msg.sender_id}")
+            if is_consistent:
+                self.log(f"[in-prepare2] Received valid confirmation from Rep. Watchdog satisfied.", source=f"node-{node.node_id}")
+                st["intra_group_done"] = True
+                st["state"] = ConsensusState.PRE_PREPARED
             else:
-                 self.log(f"Node {node.node_id} received ALARM from {msg.sender_id} (Unknown Group)")
+                self.log(f"[in-prepare2] ALARM! Inconsistent message from Rep {msg.sender_id}. Triggering emergency broadcast.", source=f"node-{node.node_id}")
+                self._trigger_watchdog_broadcast(node, msg)
 
-        # PHASE 5 continued: Inter-Group PBFT 
-        elif msg.msg_type == MsgType.REP_PREPARE:
+        # 4. out-prepare (Representative -> All Representatives)
+        elif msg.msg_type == MsgType.OUT_PREPARE:
             if node.is_group_representative:
-                sender_group = self.node_group_map.get(msg.sender_id, -1)
+                sender_group = self.node_group_map[msg.sender_id]
                 
-                my_group_id = self.node_group_map[node.node_id]
-                self.log(f"[IN_PREPARE2 | GROUP {my_group_id} | REPRESENTATIVE] Received from node-{msg.sender_id}: {msg.content or msg.digest[:10]}", source=f"node-{node.node_id}")
-
-                # Check exclusion logic
-                if sender_group in st["flagged_groups"]:
-                    self.log(f"Rep {node.node_id} IGNORED Prep vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
-                    pass
-                else:
-                    # -- Weighted Voting Logic --
-                    # Use a dict to store weights: sender_id -> weight
-                    st["rep_prepare_votes"][msg.sender_id] = msg.weight
+                # If we get a message from a Representative, it represents the whole group (weight R)
+                # If it's a watchdog broadcast from a member, it's weight 1.
+                # Per Model: "otherwise, the number of valid signatures is calculated as the number of votes."
+                st["out_prepare_votes"][msg.sender_id] = msg.weight
                 
-                # Calculate Quorum based on TOTAL WEIGHT
-                # Max weight possible per group is approx group_size
-                # We need a robust 'weighted quorum'
-                # For simplicity, we keep the 'count' quorum but we theoretically acknowledge weights
-                # Improvements: Total Weight > 2/3 Total Possible Weight
+                # Check Global Consensus
+                current_weight = sum(st["out_prepare_votes"].values())
+                required_weight = (2 * self.config.n) // 3
                 
-                current_total_weight = sum(st["rep_prepare_votes"].values())
-                
-                # Weighted Quorum: Total weight must be > 2/3 of Total Network Size
-                # This ensures that > 2/3 of ALL nodes in the network (indirectly) support the decision
-                total_network_weight = self.config.n 
-                required_weight = (2 * total_network_weight) // 3
-                
-                if current_total_weight > required_weight and st["state"] != ConsensusState.PREPARED:
+                if current_weight > required_weight and not st["inter_group_done"]:
+                    st["inter_group_done"] = True
                     st["state"] = ConsensusState.PREPARED
-                    # Propagate weight to Commit phase? Usually not needed if Prepare is safe.
-                    # Use MY weight, not the sender's weight
-                    my_weight = st.get("my_weight", 1) 
-                    rep_com = Message(MsgType.REP_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, weight=my_weight)
-                    
-                    self.log(f"[GLOBAL] Received aggregate from group {sender_group}: rep=node-{msg.sender_id}, value={msg.content}, valid_sigs={msg.weight}", source="simulation")
+                    self.log(f"[out-prepare] Global weighted quorum reached ({current_weight}). Sending commit to Replica 0.", source=f"node-{node.node_id}")
+                    # commit: Representative -> Replica 0 (Global Primary)
+                    commit_msg = Message(MsgType.COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+                    self.send(node, 0, commit_msg) # Replica 0 is Global Primary
 
-                    for r_id in self.reps:
-                        self.send(node, r_id, rep_com)
-                        
-        elif msg.msg_type == MsgType.REP_COMMIT:
-            if node.is_group_representative:
-                sender_group = self.node_group_map.get(msg.sender_id, -1)
-
-                if sender_group in st["flagged_groups"]:
-                    self.log(f"Rep {node.node_id} IGNORED Commit vote from Rep {msg.sender_id} (Group {sender_group} flagged)")
-                    pass
-                else:
-                    st["rep_commit_votes"][msg.sender_id] = msg.weight
-
-                current_total_weight = sum(st["rep_commit_votes"].values())
-                total_network_weight = self.config.n
-                required_weight = (2 * total_network_weight) // 3
+        # 5. commit (Representatives -> Replica 0)
+        elif msg.msg_type == MsgType.COMMIT:
+            if node.node_id == 0: # Replica 0 Aggregator
+                st["commit_votes"].add(msg.sender_id)
                 
-                if current_total_weight > required_weight and st["state"] != ConsensusState.COMMITTED:
+                # Paper: Threshold analysis for inter-group consensus
+                # Usually requires majority of group weights/representatives
+                threshold = (len(self.reps) * 2) // 3
+                
+                if len(st["commit_votes"]) > threshold and not self.consensus_reached:
                     st["state"] = ConsensusState.COMMITTED
-                    
-                    # Use the stored proposal value, or fall back to the message content if present
-                    final_value = st.get("proposal_value", msg.content) or "Unknown_Value"
-                    self.decided_value = final_value
-                    
-                    self.log(f"Rep {node.node_id} reached Inter-Group consensus")
-                    
-                    if not self.consensus_reached:
-                         # Log ONLY ONCE for the global success
-                         self.log(f"[GLOBAL] Consensus reached: value='{self.decided_value}'", source="simulation")
-                    
-                    self.consensus_reached = True
-                    self.consensus_event.set()
-                    
-                    # Broadcast Final Decision?
-                    dec_msg = Message(MsgType.FINAL_DECISION, node.node_id, msg.view, msg.sequence_number, msg.digest, content=final_value)
-                    # Send to everyone
+                    self.log(f"[commit] Replica 0 aggregated signatures. Broadcasting preprepare2 to whole network.", source="Replica-0")
+                    # preprepare2: Replica 0 -> All nodes
+                    prep2 = Message(MsgType.PREPREPARE2, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
                     for n in self.nodes:
-                         self.send(node, n.node_id, dec_msg)
-                    pass
+                        self.send(node, n.node_id, prep2)
 
-                    self.decided_value = "VALUE_Y"
-                    self.log(f"Rep {node.node_id} reached Inter-Group consensus")
-                    
-                    # Send Reply to Client
-                    self.send(node, -1, Message(MsgType.REPLY, node.node_id, msg.view, msg.sequence_number, msg.digest))
-                    
-                    # PHASE 6: Broadcast Decision to Group 
+        # 6. preprepare2 (Replica 0 -> All Nodes)
+        elif msg.msg_type == MsgType.PREPREPARE2:
+            st["state"] = ConsensusState.DECIDED
+            self.log(f"[preprepare2] Global consensus finalized. Sending REPLY to Client.", source=f"node-{node.node_id}")
+            self.decided_value = msg.content
+            self.consensus_reached = True
+            self.consensus_event.set()
+            # Reply: All nodes -> Client
+            self.send(node, -1, Message(MsgType.REPLY, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content))
 
-        # PHASE 6 continued: Members accept decision 
-        elif msg.msg_type == MsgType.FINAL_DECISION:
-             self.decided_value = "VALUE_Y"
-             self.consensus_reached = True # Global flag for sim termination
-             st["state"] = ConsensusState.DECIDED
-             self.consensus_event.set()
-             
-             # Send Reply to Client
-             self.send(node, -1, Message(MsgType.REPLY, node.node_id, msg.view, msg.sequence_number, msg.digest))
+    async def _watchdog_timer(self, node: Node, original_msg: Message, rep_id: int):
+        """Algorithm 1 Watchdog: Waits for the representative to broadcast the group decision."""
+        # Simulated timeout based on protocol parameters
+        await asyncio.sleep(0.5) 
+        
+        key = (original_msg.view, original_msg.sequence_number)
+        st = self.node_states[node.node_id].get(key)
+        
+        # If the local group consensus hasn't finished, the representative is likely Byzantine/Silent
+        if st and not st["intra_group_done"] and not st["watchdog_triggered"]:
+            self.log(f"[WATCHDOG] Rep {rep_id} TIMEOUT. Peer-to-Network broadcast triggered.", source=f"node-{node.node_id}")
+            self._trigger_watchdog_broadcast(node, original_msg)
+
+    def _trigger_watchdog_broadcast(self, node: Node, original_msg: Message):
+        """Bypasses a faulty representative to send the node's vote directly to the network."""
+        key = (original_msg.view, original_msg.sequence_number)
+        st = self.node_states[node.node_id][key]
+        if st["watchdog_triggered"]: return
+        st["watchdog_triggered"] = True
+        
+        # Consistent with Node Decision Broadcast Model: send individual vote (weight=1)
+        out_prep = Message(MsgType.OUT_PREPARE, node.node_id, original_msg.view, original_msg.sequence_number, original_msg.digest, content=st["proposal_value"], weight=1)
+        for r_id in self.reps:
+            self.send(node, r_id, out_prep)
+

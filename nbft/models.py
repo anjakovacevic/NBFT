@@ -11,30 +11,31 @@ class NodeType(Enum):
     BYZANTINE = auto()
 
 class MsgType(Enum):
-    # PBFT Types
-    PRE_PREPARE = auto()
-    PREPARE = auto()
-    COMMIT = auto()
+    # Common Types
+    REQUEST = auto()
     
-    # NBFT Specific Types
+    # Standard PBFT Types (Used by PBFT simulator)
+    PBFT_PRE_PREPARE = auto()
+    PBFT_PREPARE = auto()
+    PBFT_COMMIT = auto()
+    
+    # NBFT Specific Types (Paper Terminology)
     # Intra-group phases
-    GROUP_PRE_PREPARE = auto() # Primary -> Group
-    GROUP_VOTE = auto() # Group Members -> Representative
-    GROUP_RESULT = auto() # Rep -> Group Members know the decision
-    ALARM = auto() # Member -> Network (if the representative is not following the protocol)
+    PREPREPARE1 = auto() # Global Primary -> Representatives
+    IN_PREPARE1 = auto() # Representative -> Group Members
+    IN_PREPARE2 = auto() # Group Members -> Representative
+    LOCAL_COMMIT = auto() # Representative -> Members (Result confirmation / Watchdog)
+    ALARM = auto() # Member -> Network (Fraud detection)
     
     # Inter-group phases
-    REP_PRE_PREPARE = auto() # Global Primary -> Representatives
-    REP_PREPARE = auto() # Among Representatives
-    REP_COMMIT = auto() # Among Representatives
+    OUT_PREPARE = auto() # Representative -> All Representatives (Weighted broadcast)
+    COMMIT = auto() # Among Representatives (Final agreement)
+    PREPREPARE2 = auto() # Global Success -> All Members (Final dissemination)
     
-    # View Change
+    # Standard Finalization & View Change
+    REPLY = auto() # To Client
     VIEW_CHANGE = auto() # Broadcast when timer expires
     NEW_VIEW = auto() # New Primary announces new view
-    
-    # Finalization
-    REPLY = auto() # To Client
-    FINAL_DECISION = auto() # Rep -> Group Members
 
 class ConsensusState(Enum):
     IDLE = auto()
@@ -54,7 +55,7 @@ class Node:
     node_id: int
     public_key: str # Placeholder for PKI
     is_byzantine: bool = False
-    byzantine_strategy: str = "none" # e.g., "silent", "equivocator"
+    byzantine_strategy: str = "none" # e.g. "silent", "equivocator"
     
     # NBFT specific grouping fields
     group_id: int = -1
@@ -105,7 +106,6 @@ class Message:
 class Vote:
     """
     NBFT specific: A condensed vote sent from group members to representatives.
-    Maps to Algorithm 2 logic where representatives count votes.
     """
     voter_id: int
     view: int
@@ -117,7 +117,7 @@ class Vote:
 class Group:
     """
     NBFT specific: A cluster of nodes.
-    Maps to Section 3.1: nodes are divided into m groups.
+    Nodes are divided into m groups.
     """
     group_id: int
     representative_id: int # The node acting as primary for this group

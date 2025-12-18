@@ -81,7 +81,7 @@ class PBFTSimulator:
         self.start_time = time.time()
         
         primary_id = 0 
-        req_msg = Message(MsgType.PRE_PREPARE, primary_id, 0, 1, "digest_req", "VALUE_X")
+        req_msg = Message(MsgType.PBFT_PRE_PREPARE, primary_id, 0, 1, "digest_req", "VALUE_X")
         
         primary = self.nodes[primary_id]
         
@@ -128,7 +128,7 @@ class PBFTSimulator:
         st = self.node_states[node.node_id][state_key]
         
         # Logic Flow
-        if msg.msg_type == MsgType.PRE_PREPARE:
+        if msg.msg_type == MsgType.PBFT_PRE_PREPARE:
             if st["state"] == ConsensusState.IDLE:
                 st["state"] = ConsensusState.PRE_PREPARED
                 st["pre_prepare"] = True
@@ -137,10 +137,10 @@ class PBFTSimulator:
                 self.log(f"Received PrePrepare with value: {msg.content}", source=f"node-{node.node_id}")
 
                 # Broadcast PREPARE
-                reply = Message(MsgType.PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+                reply = Message(MsgType.PBFT_PREPARE, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
                 self.send_multicast(node, reply)
                 
-        elif msg.msg_type == MsgType.PREPARE:
+        elif msg.msg_type == MsgType.PBFT_PREPARE:
             st["prepare_votes"].add(msg.sender_id)
             if len(st["prepare_votes"]) >= quorum and st["state"] == ConsensusState.PRE_PREPARED:
                 st["state"] = ConsensusState.PREPARED
@@ -148,10 +148,10 @@ class PBFTSimulator:
                 self.log(f"Prepared (Votes: {len(st['prepare_votes'])} >= Threshold: {quorum})", source=f"node-{node.node_id}")
 
                 # Broadcast COMMIT
-                commit = Message(MsgType.COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, content=st["proposal_value"])
+                commit = Message(MsgType.PBFT_COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, content=st["proposal_value"])
                 self.send_multicast(node, commit)
                 
-        elif msg.msg_type == MsgType.COMMIT:
+        elif msg.msg_type == MsgType.PBFT_COMMIT:
             st["commit_votes"].add(msg.sender_id)
             if len(st["commit_votes"]) >= quorum and st["state"] == ConsensusState.PREPARED:
                 st["state"] = ConsensusState.COMMITTED

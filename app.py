@@ -11,7 +11,7 @@ from nbft.analysis import Analysis
 runner = ExperimentRunner()
 repo = Repository()
 
-def plot_nbft_trace(trace, n, m):
+def plot_nbft_trace(trace, n, m, algo="NBFT"):
     """
     Generates a sequence diagram matching Figure 1 of the paper.
     """
@@ -47,6 +47,29 @@ def plot_nbft_trace(trace, n, m):
     # Map real node ID to Y-axis position (index in sorted list)
     y_pos_map = {node_id: idx for idx, node_id in enumerate(sorted_node_list)}
     
+    # Sort messages by Phase then Time
+    # Phase Order based on Paper Terminology
+    phase_order = {
+        "PBFT_PRE_PREPARE": 0,
+        "PBFT_PREPARE": 1,
+        "PBFT_COMMIT": 2,
+        "REQUEST": 0,
+        "PREPREPARE1": 1,
+        "IN_PREPARE1": 2,
+        "IN_PREPARE2": 3,
+        "LOCAL_COMMIT": 4,
+        "OUT_PREPARE": 5,
+        "COMMIT": 6,
+        "PREPREPARE2": 7,
+        "REPLY": 8,
+        "VIEW_CHANGE": 99
+    }
+    sorted_trace = sorted(trace, key=lambda m: (phase_order.get(m['type'], 50), m['time']))
+    
+    # Calculate Logical Width for lines
+    # step_width is 1.0
+    logical_max_x = len(sorted_trace) * 1.0 + 1.0
+    
     # Plot horizontal lines for nodes
     current_group = -1
     for idx, i in enumerate(sorted_node_list):
@@ -57,7 +80,7 @@ def plot_nbft_trace(trace, n, m):
         if group_id != current_group:
             if current_group != -1:
                 # Draw a thin line between groups
-                 ax.hlines(y=idx-0.5, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='lightgray', linestyles='dotted', linewidth=1.0)
+                 ax.hlines(y=idx-0.5, xmin=0, xmax=logical_max_x, colors='lightgray', linestyles='dotted', linewidth=1.0)
             current_group = group_id
             
         color = 'black'
@@ -68,79 +91,119 @@ def plot_nbft_trace(trace, n, m):
             color = 'blue'
             linewidth = 2.5
             label += " [Global Pri]"
-            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linestyles='dashed', linewidth=linewidth)
+            ax.hlines(y=idx, xmin=0, xmax=logical_max_x, colors=color, linestyles='dashed', linewidth=linewidth)
         elif i in reps:
             color = 'black'
             linewidth = 2.5
             label += " [Rep]"
-            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors=color, linewidth=linewidth)
+            ax.hlines(y=idx, xmin=0, xmax=logical_max_x, colors=color, linewidth=linewidth)
         else:
-            ax.hlines(y=idx, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='gray', linewidth=0.5)
+            ax.hlines(y=idx, xmin=0, xmax=logical_max_x, colors='gray', linewidth=0.5)
             
         ax.text(-0.02, idx, label, fontsize=8, va='center', ha='right', transform=ax.get_yaxis_transform())
     
     # Redefine total sorted nodes count for Y-axis limit
     total_plotted_nodes = len(sorted_node_list)
 
-    # Draw Client Line
-    ax.hlines(y=-1, xmin=0, xmax=max(t['arrival'] for t in trace)*1.05, colors='green', linewidth=2.0)
-    ax.text(-0.02, -1, "Client", fontsize=9, va='center', ha='right', fontweight='bold', transform=ax.get_yaxis_transform())
+    # Draw Client Line at TOP (N) instead of -1
+    client_y_pos = total_plotted_nodes
+    ax.hlines(y=client_y_pos, xmin=0, xmax=logical_max_x, colors='green', linewidth=2.0)
+    ax.text(-0.02, client_y_pos, "Client", fontsize=9, va='center', ha='right', fontweight='bold', transform=ax.get_yaxis_transform())
 
-    # Map message types to colors
     type_colors = {
-        "REP_PRE_PREPARE": "blue",
-        "GROUP_PRE_PREPARE": "green",
-        "GROUP_VOTE": "orange",
-        "GROUP_RESULT": "lime",
-        "ALARM": "black",
-        "REP_PREPARE": "purple",
-        "REP_COMMIT": "brown",
-        "FINAL_DECISION": "red",
+        "PBFT_PRE_PREPARE": "blue",
+        "PBFT_PREPARE": "green",
+        "PBFT_COMMIT": "brown",
+        "REQUEST": "gray",
+        "PREPREPARE1": "blue",
+        "IN_PREPARE1": "green",
+        "IN_PREPARE2": "orange",
+        "LOCAL_COMMIT": "lime",
+        "OUT_PREPARE": "purple",
+        "COMMIT": "brown",
+        "PREPREPARE2": "red",
         "REPLY": "cyan",
         "VIEW_CHANGE": "magenta", 
     }
 
+    # Define Phase Priority for Logical Ordering
+
+
     # Plot Messages
-    for msg in trace:
-        t_start = msg['time']
-        t_end = msg['arrival']
+    # Use Logical Phase Blocks for X-axis to show concurrent events properly
+    phase_width = 1.5
+    
+    for msg in sorted_trace:
+        mtype = msg['type']
+        p_idx = phase_order.get(mtype, 10)
+        
+        # Base X for this phase
+        x_base = p_idx * phase_width
+        
+        # Add tiny jitter based on time to show slight sequence within phase if any
+        # But mostly they will overlap for broadcasts
+        jitter = (msg['time'] % 0.1) * 0.5 
+        
+        x_start = x_base + jitter
+        x_end = x_start + (phase_width * 0.6)
+        
         src_id = msg['sender']
         dst_id = msg['receiver']
-        mtype = msg['type']
         
         # Map IDs to plotted Y positions
-        src = y_pos_map.get(src_id, src_id) # Fallback for Client (-1) or unknown
-        dst = y_pos_map.get(dst_id, dst_id)
+        if src_id == -1: src = client_y_pos
+        else: src = y_pos_map.get(src_id, src_id)
         
-        # Handle Client: -1 needs to be placed separately or mapped
-        # In this plot, Client is at Y = -1. Let's keep it.
-        # But if we use y_pos_map which are 0..N-1, then -1 is below.
-        # However, our y_pos_map is 0-indexed.
-        # Usually Client is visually separated. 
-        # The previous code plotted Client line at y=-1.
-        # So keeping src/dst as -1 works if we don't map it.
+        if dst_id == -1: dst = client_y_pos
+        else: dst = y_pos_map.get(dst_id, dst_id)
         
         color = type_colors.get(mtype, 'gray')
         
         # Draw arrow
         ax.annotate("",
-                    xy=(t_end, dst), xycoords='data',
-                    xytext=(t_start, src), textcoords='data',
-                    arrowprops=dict(arrowstyle="->", color=color, alpha=0.6, lw=1))
-
-    ax.set_title("NBFT Message Sequence Chart")
-    ax.set_xlabel("Time (s)")
+                    xy=(x_end, dst), xycoords='data',
+                    xytext=(x_start, src), textcoords='data',
+                    arrowprops=dict(arrowstyle="->", color=color, alpha=0.5, lw=1))
+    
+    ax.set_yticks([])
+    ax.set_xlabel("Consensus Phases")
     ax.set_ylabel("Node ID")
-    ax.set_yticks([]) # Hide standard y-ticks
-    ax.invert_yaxis() # Node 0 at top
+    ax.set_title(f"{algo} Message Sequence Chart")
+    ax.set_ylim(-1, total_plotted_nodes + 1)
     
-    # Add Legend for message types
+    # Max phase index in use
+    max_p = max([phase_order.get(m['type'], 0) for m in trace]) if trace else 8
+    
+    # Grid
+    ax.grid(True, linestyle='--', alpha=0.5) # Both axes
+    
+    # Set X-ticks to be Phase Names
+    # We use the same p_idx mapping as the arrows above
+    final_xticks = []
+    final_xlabels = []
+    
+    # Get all phases present in the trace
+    present_phases = sorted(list(set(m['type'] for m in trace)), key=lambda t: phase_order.get(t, 99))
+    
+    for p in present_phases:
+        p_idx = phase_order.get(p, 10)
+        # Center of the phase block
+        center_x = (p_idx * phase_width) + (phase_width * 0.3)
+        final_xticks.append(center_x)
+        final_xlabels.append(p)
+    
+    ax.set_xticks(final_xticks)
+    ax.set_xticklabels(final_xlabels, rotation=45, ha='right', fontsize=8)
+    ax.set_xlim(-0.5, (max_p + 1) * phase_width)
+
+    # Add Legend for message types (Only show present types)
     from matplotlib.lines import Line2D
-    legend_elements = [Line2D([0], [0], color=c, lw=2, label=t) for t, c in type_colors.items()]
-    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), fontsize='small', title="Message Types")
-    
-    plt.tight_layout()
+    present_types = set(m['type'] for m in trace)
+    legend_elements = [Line2D([0], [0], color=c, lw=2, label=t) for t, c in type_colors.items() if t in present_types]
+    ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1), fontsize='small', title='Message Phases')
+
     return fig
+    
 
 async def run_single_simulation(algo, n, m, bad_nodes):
     try:
@@ -170,7 +233,7 @@ async def run_single_simulation(algo, n, m, bad_nodes):
         
         fig = None
         if algo == "NBFT" and result.message_trace:
-            fig = plot_nbft_trace(result.message_trace, int(n), int(m))
+            fig = plot_nbft_trace(result.message_trace, int(n), int(m), algo=algo)
         
         return output_text, fig
     except Exception as e:
@@ -210,7 +273,7 @@ def load_history():
     runs = repo.get_all_runs()
     return pd.DataFrame(runs)
 
-# --- UI Definition ---
+# UI Definition
 
 with gr.Blocks(title="NBFT Simulator") as demo:
     gr.Markdown(

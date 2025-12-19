@@ -229,7 +229,7 @@ async def run_single_simulation(algo, n, m, bad_nodes):
         if result.byzantine_nodes:
             output_text += f"Byzantine Nodes: {result.byzantine_nodes}\n"
         output_text += f"Phases: {result.messages_per_phase}\n"
-        output_text += "\nLOGS \n" + "\n".join(result.logs[-25:])
+        output_text += "\nLOGS \n" + "\n".join(result.logs)
         
         fig = None
         if algo == "NBFT" and result.message_trace:

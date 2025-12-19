@@ -2,6 +2,8 @@ from typing import List, Optional
 import random
 from .models import Node, Message, MsgType, Vote
 
+from dataclasses import replace
+
 class ByzantineBehavior:
     """
     Implements the Byzantine failure modes described in Section 4.1.
@@ -29,8 +31,8 @@ class ByzantineBehavior:
             # Sends conflicting information to different nodes.
             # Simplified: Flip a bit in the digest for half the targets
             if target_id % 2 == 0:
-                message.digest = message.digest[::-1] # Reverse hash to corrupt
-                message.signature = "INVALID"
+                # Return a corrupted copy
+                return replace(message, digest=f"CORRUPTED_{message.digest}")
             return message
             
         elif strategy == "bad_aggregator":
@@ -38,8 +40,10 @@ class ByzantineBehavior:
             # They might claim they have enough votes when they don't,
             # or forward a decision they didn't actually reach.
             if node.is_group_representative:
-                 if message.msg_type in [MsgType.REP_PREPARE, MsgType.GROUP_RESULT]:
-                     message.digest = "CORRUPTED_AGGREGATE"
+                 if message.msg_type in [MsgType.IN_PREPARE2, MsgType.OUT_PREPARE]:
+                     return replace(message, 
+                                    digest="CORRUPTED_AGGREGATE",
+                                    content="MALICIOUS_VALUE")
             return message
 
         elif strategy == "random_noise":

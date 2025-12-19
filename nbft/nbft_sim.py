@@ -45,6 +45,7 @@ class NBFTSimulator:
         self.decided_value = None
         self.message_count = 0
         self.phase_counts = collections.defaultdict(int)
+        self.background_tasks = set()
 
     def _setup_nodes(self) -> List[Node]:
         nodes = []
@@ -96,14 +97,15 @@ class NBFTSimulator:
         if not hasattr(self, 'verbose_logging'): self.verbose_logging = True # Default or set in init
         
         # In Single Simulation, we want detailed logs.
-        # Format: YYYY-MM-DD HH:MM:SS,fff - source - LEVEL - msg
         formatted_msg = f"{level} - {source} - {msg}"
         self.logs.append(formatted_msg)
 
     def send(self, sender: Node, target_id: int, msg: Message):
         # Log the send event if verbose
         # self.log(f"[{msg.msg_type.name}] Sent to node-{target_id}: {msg.digest[:10]}...", source=f"node-{sender.node_id}")
-        asyncio.create_task(self._async_send(sender, target_id, msg))
+        task = asyncio.create_task(self._async_send(sender, target_id, msg))
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
 
     async def _async_send(self, sender: Node, target_id: int, msg: Message):
         # Special case: Sending to Client (ID -1)
@@ -192,9 +194,10 @@ class NBFTSimulator:
             gp = self.nodes[self.global_primary_id]
             
             # PHASE: preprepare1
-            # 1. Client sends REQUEST to Node 0 (Global Primary)
+            # 1. Client sends REQUEST to Global Primary
+            # (Note: In paper, Client sends to node 0 or Primary, we use self.global_primary_id)
             client_req = Message(MsgType.REQUEST, -1, current_view, 1, "digest_nbft", "VALUE_Y")
-            self.send(Node(-1, ""), 0, client_req)
+            self.send(Node(-1, ""), self.global_primary_id, client_req)
                 
             try:
                 # Wait for consensus or timeout
@@ -207,10 +210,20 @@ class NBFTSimulator:
             except asyncio.TimeoutError:
                 self.log(f"View {current_view} TIMEOUT.")
                 current_view += 1
+                if current_view < max_views:
+                    self.log(f"--- STARTING VIEW {current_view} ---")
 
         if self.consensus_reached:
             # Short grace period to let final decision/reply messages finish tracing
             await asyncio.sleep(0.1)
+
+        # Cleanup: Cancel any remaining background tasks (like watchdog timers that didn't fire)
+        for task in self.background_tasks:
+            if not task.done():
+                task.cancel()
+        
+        if self.background_tasks:
+            await asyncio.gather(*self.background_tasks, return_exceptions=True)
 
         duration = time.time() - self.start_time
         
@@ -256,16 +269,16 @@ class NBFTSimulator:
         
         st = self.node_states[node.node_id][key]
         
-        # 0. REQUEST (Client -> Node 0)
+        # 0. REQUEST (Client -> Global Primary)
         if msg.msg_type == MsgType.REQUEST:
-            if node.node_id == 0:
-                self.log(f"[REQUEST] Global Primary received client request. Broadcasting PREPREPARE1 to all nodes.", source="node-0")
+            if node.node_id == self.global_primary_id:
+                self.log(f"[REQUEST] Global Primary received client request. Broadcasting PREPREPARE1 to all nodes.", source=f"node-{node.node_id}")
                 st["proposal_value"] = msg.content
-                broadcast_msg = Message(MsgType.PREPREPARE1, 0, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+                broadcast_msg = Message(MsgType.PREPREPARE1, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
                 for other_node in self.nodes:
                     self.send(node, other_node.node_id, broadcast_msg)
 
-        # 1. preprepare1 (Node 0 -> All Nodes)
+        # 1. preprepare1 (Global Primary -> All Nodes)
         elif msg.msg_type == MsgType.PREPREPARE1:
             st["proposal_value"] = msg.content
             
@@ -277,7 +290,9 @@ class NBFTSimulator:
             
             # Algorithm 1: Watchdog Timer
             # Start a watchdog to wait for in-prepare2 from the Representative
-            asyncio.create_task(self._watchdog_timer(node, msg, rep_id))
+            watchdog_task = asyncio.create_task(self._watchdog_timer(node, msg, rep_id))
+            self.background_tasks.add(watchdog_task)
+            watchdog_task.add_done_callback(self.background_tasks.discard)
 
         # 2. in-prepare1 (Node -> Representative)
         elif msg.msg_type == MsgType.IN_PREPARE1:
@@ -289,18 +304,12 @@ class NBFTSimulator:
                 group_size = self.groups[group_id].size
                 threshold = group_size - Analysis.calculate_w(group_size)
                 
-                if len(st["in_prepare1_votes"]) > 0 and not st["intra_group_done"]:
+                if len(st["in_prepare1_votes"]) >= threshold and not st["intra_group_done"]:
                     # Threshold Vote-Counting Model (Section III.D)
-                    # If valid signatures >= R - w, count as full group size (R)
-                    # Otherwise, count literal signatures
-                    current_votes = len(st["in_prepare1_votes"])
-                    if current_votes >= threshold:
-                        vote_weight = group_size
-                        st["intra_group_done"] = True # Reached full local consensus
-                        self.log(f"[in-prepare1] Group {group_id} reached FULL threshold. Weight={vote_weight}", source=f"node-{node.node_id}")
-                    else:
-                        vote_weight = current_votes
-                        self.log(f"[in-prepare1] Group {group_id} sending partial votes. Weight={vote_weight}", source=f"node-{node.node_id}")
+                    # Reached FULL local consensus
+                    st["intra_group_done"] = True
+                    vote_weight = group_size
+                    self.log(f"[in-prepare1] Group {group_id} reached FULL threshold. Weight={vote_weight}", source=f"node-{node.node_id}")
                     
                     # in-prepare2: Representative -> All group nodes (Confirmation)
                     in_prep2 = Message(MsgType.IN_PREPARE2, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
@@ -342,24 +351,23 @@ class NBFTSimulator:
                 if current_weight > required_weight and not st["inter_group_done"]:
                     st["inter_group_done"] = True
                     st["state"] = ConsensusState.PREPARED
-                    self.log(f"[out-prepare] Global weighted quorum reached ({current_weight}). Sending commit to Replica 0.", source=f"node-{node.node_id}")
-                    # commit: Representative -> Replica 0 (Global Primary)
+                    self.log(f"[out-prepare] Global weighted quorum reached ({current_weight}). Sending commit to Global Primary.", source=f"node-{node.node_id}")
+                    # commit: Representative -> Global Primary (Replica 0)
                     commit_msg = Message(MsgType.COMMIT, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
-                    self.send(node, 0, commit_msg) # Replica 0 is Global Primary
+                    self.send(node, self.global_primary_id, commit_msg)
 
-        # 5. commit (Representatives -> Replica 0)
+        # 5. commit (Representatives -> Global Primary)
         elif msg.msg_type == MsgType.COMMIT:
-            if node.node_id == 0: # Replica 0 Aggregator
+            if node.node_id == self.global_primary_id: # Aggregator
                 st["commit_votes"].add(msg.sender_id)
                 
                 # Paper: Threshold analysis for inter-group consensus
-                # Usually requires majority of group weights/representatives
                 threshold = (len(self.reps) * 2) // 3
                 
                 if len(st["commit_votes"]) > threshold and not self.consensus_reached:
                     st["state"] = ConsensusState.COMMITTED
-                    self.log(f"[commit] Replica 0 aggregated signatures. Broadcasting preprepare2 to whole network.", source="Replica-0")
-                    # preprepare2: Replica 0 -> All nodes
+                    self.log(f"[commit] Global Primary aggregated signatures. Broadcasting preprepare2 to whole network.", source=f"node-{node.node_id}")
+                    # preprepare2: Global Primary -> All nodes
                     prep2 = Message(MsgType.PREPREPARE2, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
                     for n in self.nodes:
                         self.send(node, n.node_id, prep2)

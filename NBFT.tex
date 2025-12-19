@@ -167,48 +167,52 @@ Struktura projekta podeljena je na sledeće ključne celine:
 \end{itemize}
 
 \subsection{Algoritam formiranja grupa (Consistent Hashing)}
-Jedna od ključnih komponenti NBFT sistema je determinističko, ali nepredvidivo formiranje grupa. Implementirani modul \texttt{consistent\_hash.py} oslanja se na koncept konzistentnog heširanja na prstenu, uz dodatak mehanizma za balansiranje opterećenja (\textit{Bounded Load Balancing}).
+Jedna od ključnih komponenti NBFT sistema je determinističko, ali nepredvidivo formiranje grupa čime se osigurava zaštita od koordinisanih napada. Implementirani modul \texttt{consistent\_hash.py} oslanja se na koncept konzistentnog heširanja na prstenu veličine $2^{32}$ i strogo prati matematički model opisan u radu.
 
-Proces formiranja grupa odvija se kroz sledeće korake:
+Proces formiranja topologije mrežne simulacije odvija se kroz sledeće faze:
 
 \begin{enumerate}
-    \item \textbf{Mapiranje grupa}: Identifikatori grupa ($ID_G \in [0, m-1]$) se heširaju zajedno sa trenutnim brojem pogleda ($v$) kako bi se dobile njihove pozicije na virtualnom prstenu veličine $2^{32}$. Ovo osigurava da se raspored grupa menja u svakoj iteraciji (View Change).
-    \[ Pos(G_i) = Hash(v || i) \mod 2^{32} \]
+    \item \textbf{Mapiranje čvorova}: Svaki čvor se mapira na fiksnu poziciju na prstenu koristeći heš funkciju nad svojim identifikatorom: $Pos(N_j) = Hash(ID_N) \mod 2^{32}$. Čvorovi se sortiraju u smeru kazaljke na satu.
     
-    \item \textbf{Mapiranje čvorova}: Svaki čvor ($ID_N$) se mapira na fiksnu poziciju na prstenu.
-    \[ Pos(N_j) = Hash(N_j) \mod 2^{32} \]
-    
-    \item \textbf{Bounded Load Dodela}: Kako bi se izbegla neranomerna raspodela čvorova (koja je česta kod standardnog konzistentnog heširanja sa malim brojem ključeva), uvodi se kapacitet grupe $C_{max} = \lceil N/M \rceil + 1$.
-    Algoritam iterira kroz sortirane pozicije čvorova i dodeljuje ih prvoj "narednoj" grupi na prstenu koja nije popunila svoj kapacitet. Ukoliko je najbliža grupa puna, pretraga se nastavlja ciklično dok se ne pronađe slobodno mesto.
-    
-    \item \textbf{Izbor predstavnika}: Unutar svake grupe, za predstavnika se bira onaj čvor čija je pozicija na prstenu "najbliža" virtualnoj tački grupe (računajući u smeru suprotnom od kazaljke na satu), čime se simulira topološka bliskost.
+    \item \textbf{Izbor globalnog primarnog čvora}: Primarni čvor nije fiksiran, već se dinamički bira za svaki pogled ($v$):
+    \[ Target(v) = Hash(MasterIP_{prev} || v) \mod 2^{32} \]
+    Gde je $MasterIP_{prev}$ primarni čvor prethodne runde. Čvor čija je pozicija na prstenu najbliža rezultatu u smeru kazaljke na satu postaje \textit{Global Primary}.
+
+    \item \textbf{Grupisanje (Stride Logic)}: Čvorovi se grupišu polazeći od indeksa određenog trenutnim pogledom ($v \mod N$). Prilikom grupisanja, globalni primarni čvor se preskače, a ostali čvorovi se dodeljuju u $m$ grupa po principu "svaki $m$-ti čvor ide u istu grupu". Ovim se postiže uniformna disperzija čvorova.
+
+    \item \textbf{Izbor predstavnika grupe}: Za svaku grupu, identifikuje se idealna pozicija:
+    \[ RepTarget(g) = Hash(GlobalPrimary || v || g) \mod 2^{32} \]
+    Član grupe koji je najbliži ovoj tački postaje predstavnik (\textit{Representative}).
 \end{enumerate}
 
 Pseudokod ovog postupka prikazan je u Algoritmu \ref{alg:ch}.
 
 \begin{algorithm}
-\caption{Formiranje grupa sa Bounded Load Hashing-om}
+\caption{Formiranje topologije i izbor lidera (Stride-based)}
 \label{alg:ch}
 \begin{algorithmic}[1]
-\Function{FormGroups}{$Nodes, m, View$}
-    \State $Cap \gets \lceil |Nodes|/m \rceil + 1$
-    \State $Ring \gets 2^{32}$
-    \State $Groups \gets \emptyset$
+\Function{FormGroups}{$Nodes, m, v$}
+    \State $Primary \gets \text{FindClockwiseNearest}(Hash(PrevMaster || v))$
+    \State $RingNodes \gets \text{SortNodesClockwise}(Nodes)$
+    \State $StartIdx \gets v \mod |Nodes|$
+    \State $Ordered \gets \text{Rotate}(RingNodes, StartIdx)$
+    \State $GroupBuckets \gets \text{EmptyMap}(m)$
     \State
-    \For{$i \gets 0$ \textbf{to} $m-1$}
-        \State $GPos[i] \gets Hash(View || i) \mod Ring$
+    \State $i \gets 0$
+    \For{$n \in Ordered$}
+        \If{$n = Primary$} \textbf{Continue} \EndIf
+        \State $GID \gets i \mod m$
+        \State Add $n$ to $GroupBuckets[GID]$
+        \State $i \gets i + 1$
     \EndFor
-    \State Sort $GPos$
     \State
-    \For{$n \in Nodes$}
-        \State $NPos \gets Hash(n.id) \mod Ring$
-        \State $BestG \gets FindNextClockwise(NPos, GPos)$
-        \While{$Size(Groups[BestG]) \ge Cap$}
-             \State $BestG \gets NextClockwise(BestG, GPos)$
-        \EndWhile
-        \State Add $n$ to $Groups[BestG]$
+    \State $ResultGroups \gets \emptyset$
+    \For{$g \in [0, m-1]$}
+        \State $Target \gets Hash(Primary || v || g)$
+        \State $Rep \gets \text{ClockwiseNearestMember}(GroupBuckets[g], Target)$
+        \State Add $\{g, Rep, GroupBuckets[g]\}$ to $ResultGroups$
     \EndFor
-    \State \Return $Groups$
+    \State \Return $ResultGroups$
 \EndFunction
 \end{algorithmic}
 \end{algorithm}
@@ -244,7 +248,7 @@ Implementirane strategije napada uključuju:
 \subsection{Implementacija mehanizama zaštite}
 Poseban fokus u implementaciji stavljen je na robusnost sistema:
 \begin{itemize}
-    \item \textbf{Watchdog mehanizam}: Implementiran je sistem nadzora gde čvorovi unutar grupe verifikuju odluke svojih predstavnika. U slučaju detekcije nevalidne agregacije (npr. neispravan potpis), emituje se globana \texttt{ALARM} poruka.
+    \item \textbf{Watchdog mehanizam (Node Decision Broadcast Model)}: Čvorovi unutar grupe aktivno nadziru rad svog predstavnika. Ukoliko predstavnik u fazi \texttt{in-prepare2} pošalje poruku koja je nekonzistentna sa inicijalnim zahtevom, ili ukoliko dođe do isteka vremenskog ograničenja (timeout) bez primljene potvrde, čvorovi detektuju maliciozno ponašanje. U tom slučaju, obični čvorovi "zaobilaze" (bypass) svog predstavnika i direktno šalju svoje glasove svim predstavnicima ostalih grupa (\textit{Peer-to-Network broadcast}). Ovim mehanizmom se osigurava da glas poštenih članova bude uračunat u globalni kvorum čak i ako je njihov predstavnik kompromitovan.
     \item \textbf{Izolacija neispravnih grupa}: Tokom međugrupne komunikacije, predstavnici ignorišu glasove koji dolaze iz grupa označenih kao kompromitovane (one za koje je primljen validan alarm).
     \item \textbf{Threshold Vote-Counting Model}: Implementiran je dinamički model brojanja glasova koji minimizuje uticaj malicioznih grupa na globalni konsenzus. Ukoliko predstavnik prikupi dovoljan broj potpisa unutar svoje grupe ($\ge R - w$, gde je $R$ veličina grupe), njegov glas u \texttt{out-prepare} fazi nosi težinu pune veličine grupe ($R$). U suprotnom, glas nosi oslabljenu težinu jednaku isključivo broju prikupljenih validnih potpisa. Globalni kvorum se dostiže kada suma težina pređe prag $2n/3$ ukupne mrežne populacije.
     \item \textbf{Klijentski prag konsenzusa}: U skladu sa teorijskim modelom, klijentski terminal (Customer Service Terminal) potvrđuje uspešnost operacije tek nakon što primi $(n-1)/2 + 1$ identičnih \texttt{Reply} poruka od različitih replika u mreži.

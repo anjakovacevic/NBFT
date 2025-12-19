@@ -282,7 +282,6 @@ with gr.Blocks(title="NBFT Simulator") as demo:
     
     with gr.Tabs():
         # TAB 1: Single Run
-        # TAB 1: Single Run
         with gr.TabItem("Single Simulation"):
             # Top Row: Configuration and Text Results
             with gr.Row():

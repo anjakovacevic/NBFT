@@ -2,14 +2,14 @@ import math
 
 class Analysis:
     """
-    Implements the mathematical formulas from Section 4 of the NBFT paper.
-    Used for plotting and theoretical verification.
+    Implements the mathematical formulas 
+    Used for plotting and theoretical verification
     """
     
     @staticmethod
     def calculate_R(n: int, m: int) -> int:
         """
-        Average nodes per group (excluding global primary if following (n-1) logic).
+        Average nodes per group (excluding global primary if following (n-1) logic)
         Formula: R = floor((n-1)/m)
         """
         if m == 0: return 0
@@ -18,7 +18,7 @@ class Analysis:
     @staticmethod
     def calculate_avg_R(n: int, m: int) -> float:
         """
-        Average nodes per group (simple average).
+        Average nodes per group (simple average)
         """
         if m == 0: return 0.0
         return n / m
@@ -26,7 +26,7 @@ class Analysis:
     @staticmethod
     def calculate_w(R: int) -> int:
         """
-        Fault tolerance threshold within a group.
+        Fault tolerance threshold within a group
         Formula: w = floor((R-1)/3)
         """
         return math.floor((R - 1) / 3)
@@ -34,7 +34,7 @@ class Analysis:
     @staticmethod
     def calculate_E(m: int) -> int:
         """
-        Fault tolerance for the inter-group consensus (representatives).
+        Fault tolerance for the inter-group consensus (representatives)
         Formula: E = floor((m-1)/3)
         """
         return math.floor((m - 1) / 3)
@@ -46,20 +46,11 @@ class Analysis:
     @staticmethod
     def probability_fail(n: int, m: int, f: int) -> float:
         """
-        Calculates the probability that the system fails.
-        NBFT improves reliability. The paper likely provides a formula regarding 
-        the probability of a group exceeding 'w' faulty nodes.
+        Calculates the probability that the system fails
         
-        A simplified approximation often used in these papers:
+        A simplified approximation:
         P_fail ~ Sum(Prob(group_i fails))
-        
-        Using Hypergeometric distribution logic often found in sharding papers.
-        (Visualizing the 'Fault Tolerance Interval' T mentioned in step 7).
-        """
-        # This is a placeholder for the specific Combinatorial formula C(i, R)/C(n, R) 
-        # normally used to determine if a specific group gets too many bad nodes.
-        # k = Number of byzantine nodes
-        
+        """        
         # P(X > w) where X is bad nodes in a group of size R drawn from pool n with f bad nodes.
         R = Analysis.calculate_R(n, m)
         w = Analysis.calculate_w(R)
@@ -89,7 +80,7 @@ class Analysis:
     @staticmethod
     def communication_complexity_pbft(n: int) -> int:
         """
-        Standard PBFT complexity is O(n^2).
+        Standard PBFT complexity is O(n^2)
         Approximation: 2n^2 (Prepare + Commit phases broadcast to all)
         """
         return 2 * (n * n)

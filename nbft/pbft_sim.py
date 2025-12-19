@@ -157,7 +157,7 @@ class PBFTSimulator:
                 st["state"] = ConsensusState.COMMITTED
                 # Execute/Decide
                 # For simulation, if >= f+1 honest nodes decide, we consider it global success
-                # But here we track if ANY honest node decides
+                # if ANY honest node decides
                 self.decided_value = st["proposal_value"] or "VALUE_X"
                 
                 if not node.is_byzantine:

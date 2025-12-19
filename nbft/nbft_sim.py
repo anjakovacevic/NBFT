@@ -1,15 +1,15 @@
-from typing import List, Dict, Set
+from typing import List
 import asyncio
 import time
 import collections
-from .models import Node, Message, MsgType, Vote, RunConfig, RunResult, ConsensusState
+from .models import Node, Message, MsgType, RunConfig, RunResult, ConsensusState
 from .consistent_hash import ConsistentHashing
 from .byzantine import ByzantineBehavior
 from .analysis import Analysis
+import random
 
 class NBFTSimulator:
     """
-    Step 6: NBFT Simulator (Core Task).
     Implements the two-level consensus mechanism:
     1. Intra-group (Members -> Representative)
     2. Inter-group (Between Representatives)
@@ -21,20 +21,11 @@ class NBFTSimulator:
         
         self.nodes = self._setup_nodes()
         self.ch = ConsistentHashing(self.nodes, config.m)
-        # 2. Form Groups & Identify Reps for View 0
+        # Form Groups & Identify Reps for View 0
         self._setup_view(0)
         
-        # 4. Inject Byzantine Behavior (Targeting Reps)
-        # Note: Strategies might need re-evaluating on view change if Reps change.
-        # For now, we keep static byzantine flags but their 'role-based' behavior might shift.
-        import random
-        
-        # Determine potential targets (just random sampling from population)
-        # We do this once globaly.
-        # ... (Existing Byzantine injection logic seems fine, it relies on self.reps which is now dynamic)
-        
+        # Inject Byzantine Behavior (Targeting Reps)        
         # Re-apply strategy based on INITIAL view. 
-        # Ideally we re-check this every view change.
         self._apply_byzantine_strategies()
         
         # node_id -> state dict
@@ -49,7 +40,6 @@ class NBFTSimulator:
 
     def _setup_nodes(self) -> List[Node]:
         nodes = []
-        import random
         # Randomly select Byzantine nodes from the entire population
         byz_indices = set(random.sample(range(self.config.n), self.config.actual_byzantine))
 
@@ -96,12 +86,12 @@ class NBFTSimulator:
     def log(self, msg: str, source: str = "simulation", level: str = "INFO"):
         if not hasattr(self, 'verbose_logging'): self.verbose_logging = True # Default or set in init
         
-        # In Single Simulation, we want detailed logs.
+        # In Single Simulation-> detailed logs.
         formatted_msg = f"{level} - {source} - {msg}"
         self.logs.append(formatted_msg)
 
     def send(self, sender: Node, target_id: int, msg: Message):
-        # Log the send event if verbose
+        # Log the send event
         # self.log(f"[{msg.msg_type.name}] Sent to node-{target_id}: {msg.digest[:10]}...", source=f"node-{sender.node_id}")
         task = asyncio.create_task(self._async_send(sender, target_id, msg))
         self.background_tasks.add(task)
@@ -143,8 +133,7 @@ class NBFTSimulator:
             "type": msg.msg_type.name
         })
         
-        # Sign the message
-        # We sign the digest as the unique content representative
+        # Sign the digest as the unique content representative
         signature = Message.sign(final_msg.digest, sender.node_id)
         
         cloned = Message(final_msg.msg_type, final_msg.sender_id, final_msg.view, 
@@ -171,19 +160,17 @@ class NBFTSimulator:
                 self._apply_byzantine_strategies() # Re-apply strategies for new reps
                 
                 # Simulate VIEW_CHANGE traffic
-                # All nodes broadcast VIEW_CHANGE to everyone (simplified trace)
-                # In reality: Node i sends VIEW_CHANGE to new Primary
+                # All nodes broadcast VIEW_CHANGE to everyone
                 new_prim = self.nodes[self.global_primary_id]
                 for n in self.nodes:
                     # Just add ONE trace entry per node to represent the broadcast
                     # latency = 0.001
-                    # self.trace.append(...) 
-                    # Use _async_send? No, might trigger handlers. Just log for now or direct trace.
+                    # self.trace.append(...)
                     pass
                 
                 # New Primary announces NEW_VIEW
                 # self.send(new_prim, -1, Message(MsgType.NEW_VIEW, ...)) # trace only
-                self.log(f"--- STARTING VIEW {current_view} ---")
+                self.log(f" STARTING VIEW {current_view}")
                 # Reset consensus event for the new view
                 self.consensus_event = asyncio.Event()
                 # Clear node states for the new view to avoid stale data
@@ -195,7 +182,6 @@ class NBFTSimulator:
             
             # PHASE: preprepare1
             # 1. Client sends REQUEST to Global Primary
-            # (Note: In paper, Client sends to node 0 or Primary, we use self.global_primary_id)
             client_req = Message(MsgType.REQUEST, -1, current_view, 1, "digest_nbft", "VALUE_Y")
             self.send(Node(-1, ""), self.global_primary_id, client_req)
                 
@@ -211,13 +197,13 @@ class NBFTSimulator:
                 self.log(f"View {current_view} TIMEOUT.")
                 current_view += 1
                 if current_view < max_views:
-                    self.log(f"--- STARTING VIEW {current_view} ---")
+                    self.log(f" - STARTING VIEW {current_view}  ")
 
         if self.consensus_reached:
             # Short grace period to let final decision/reply messages finish tracing
             await asyncio.sleep(0.1)
 
-        # Cleanup: Cancel any remaining background tasks (like watchdog timers that didn't fire)
+        # Cleanup: Cancel any remaining background tasks
         for task in self.background_tasks:
             if not task.done():
                 task.cancel()
@@ -305,7 +291,7 @@ class NBFTSimulator:
                 threshold = group_size - Analysis.calculate_w(group_size)
                 
                 if len(st["in_prepare1_votes"]) >= threshold and not st["intra_group_done"]:
-                    # Threshold Vote-Counting Model (Section III.D)
+                    # Threshold Vote-Counting Model
                     # Reached FULL local consensus
                     st["intra_group_done"] = True
                     vote_weight = group_size
@@ -341,7 +327,7 @@ class NBFTSimulator:
                 
                 # If we get a message from a Representative, it represents the whole group (weight R)
                 # If it's a watchdog broadcast from a member, it's weight 1.
-                # Per Model: "otherwise, the number of valid signatures is calculated as the number of votes."
+                # "otherwise, the number of valid signatures is calculated as the number of votes."
                 st["out_prepare_votes"][msg.sender_id] = msg.weight
                 
                 # Check Global Consensus

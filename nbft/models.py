@@ -75,21 +75,12 @@ class Message:
     view: int
     sequence_number: int
     digest: str # Hash of the request/content
-    content: Any = None # Payload (e.g., client request or simplified value 'v')
+    content: Any = None # Payload (e.g., client request or simplified value)
     signature: Optional[str] = None # Digital Signature
     weight: int = 1 # NBFT weighted voting: number of valid signatures collected
     
-    # Simulation metadata (not part of protocol, strictly for analysis)
-    timestamp: float = field(default_factory=time.time)
-    
     def __repr__(self):
         return f"<Msg {self.msg_type.name} from {self.sender_id} view={self.view} seq={self.sequence_number}>"
-        
-    def __lt__(self, other):
-        # Tie-breaker for priority queue: just compare timestamps or use arbitrary ID comparison
-        # Since timestamps are the primary sort key in the queue tuple, this is only called if timestamps match.
-        return self.timestamp < other.timestamp
-        
     @staticmethod
     def sign(content: str, node_id: int) -> str:
         """Simulates signing content with node's private key."""
@@ -135,10 +126,9 @@ class RunConfig:
     algorithm: str # 'PBFT' or 'NBFT'
     n: int # Total nodes
     m: int # Number of groups (NBFT only)
-    f: int = 0 # Max Byzantine nodes tolerance (theoretical)
+    f: int = 0 # Max Byzantine nodes tolerance
     actual_byzantine: int = 0 # Actual number of bad nodes injected
     client_requests: int = 1
-    latency_profile: str = "constant" # "random", "geo-distributed"
 
 @dataclass
 class RunResult:

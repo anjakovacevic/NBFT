@@ -14,6 +14,7 @@
 
 \usepackage{listings}
 \usepackage{xcolor}
+\usepackage{subcaption}
 
 \lstset{
   basicstyle=\ttfamily\footnotesize,
@@ -52,17 +53,25 @@ Rešenje ovog problema zahteva algoritme koji garantuju \textit{sigurnost} (safe
 PBFT (Practical Byzantine Fault Tolerance) algoritam, predstavljen 1999. godine, postavio je standard za praktičnu primenu vizantijskog konsenzusa u asinhronim sistemima \cite{pbft}. Iako dokazano robustan, PBFT pati od kvadratne složenosti razmene poruka ($O(n^2)$), što ga čini neprikladnim za velike mreže.
 Sa porastom broja čvorova, mrežni resursi postaju bottleneck, a latencija dramatično raste, ograničavajući primenu PBFT-a na male, zatvorene grupe konzorcijuma.
 
-Kao odgovor na ovaj problem, predložen je NBFT (Node-grouped BFT) algoritam koji uvodi dvostepenu hijerarhijsku strukturu \cite{nbft}. Osnovna premisa NBFT-a je podela mreže na disjunktne grupe, gde se konsenzus prvo postiže lokalno, a zatim agregira na nivou predstavnika grupa.
-Ovaj pristup ima za cilj da zadrži bezbednosne garancije PBFT-a uz drastično smanjenje broja potrebnih poruka.
+Kao odgovor na ovaj problem, predložen je NBFT (Node-grouped BFT) algoritam koji promoviše principe decentralizacije i demokratizacije blockchain tehnologija \cite{nbft}. NBFT uvodi inovativnu dvostepenu hijerarhijsku strukturu inspirisanu konceptom \textbf{konvolutivnog sažimanja} (convolutional pooling) iz neuronskih mreža. Ova analogija se ogleda u postepenom smanjenju broja aktivnih učesnika u procesu odlučivanja: čvorovi prvo postižu lokalni kvorum unutar svojih grupa, nakon čega predstavnici tih grupa formiraju globalni konsenzus.
+
+U poređenju sa prethodnim rešenjima, NBFT nudi tri ključna doprinosa:
+\begin{enumerate}
+    \item \textbf{Skrivanje identiteta uloga}: Korišćenjem konzistentnog heširanja, uloge čvorova (ko je predstavnik, a ko primarni čvor) su nepoznate unapred. Ovo onemogućava zlonamernim akterima da fokusirano napadaju ili korumpiraju ključne čvorove pre početka consensus runde.
+    \item \textbf{Napredni modeli bezbednosti}: Po prvi put se uvode \textit{Node Decision Broadcast Model} (nadzor predstavnika) i \textit{Threshold Vote-Counting Model} (ponderisano glasanje) kako bi se osigurala bezbednost uprkos smanjenju broja poruka.
+    \item \textbf{Povećana granica tolerancije grešaka}: Za razliku od PBFT-a čija je granica fiksna na $1/3$, NBFT kroz svoju hijerarhijsku strukturu omogućava da verovatnoća ispravnog rada ostane visoka čak i kada je ukupan broj neispravnih čvorova veći od teorijskog praga od $1/3$, što ga čini sigurnijim i tolerantnijim na greške.
+\end{enumerate}
 
 Cilj ovog rada je:
 \begin{enumerate}
-    \item Teorijska analiza NBFT algoritma i njegovih mehanizama za redukciju saobraćaja.
+    \item Teorijska analiza NBFT algoritma, njegovih modela nadzora i mehanizama za redukciju saobraćaja.
     \item Implementacija modularnog softverskog simulatora koji verno modeluje asinhronu prirodu distribuiranog sistema.
-    \item Eksperimentalna evaluacija performansi i otpornosti implementiranog rešenja kroz seriju testova skalabilnosti i injektovanja grešaka.
+    \item Eksperimentalna evaluacija performansi i verifikacija tvrdnje o povećanoj otpornosti i skalabilnosti u odnosu na referentne modele.
 \end{enumerate}
 
 U nastavku rada date je pregled problema skalabilnosti PBFT-a, detaljan opis NBFT arhitekture, prikaz softverske implementacije, kao i analiza dobijenih eksperimentalnih rezultata.
+
+
 
 
 \section{Problem skalabilnosti PBFT algoritma}
@@ -149,7 +158,7 @@ Struktura projekta podeljena je na sledeće ključne celine:
 \begin{itemize}
     \item \textbf{Domenski sloj (\texttt{nbft/models.py})}:
     Definiše osnovne entitete sistema kao što su \texttt{Node} (čvor), \texttt{Message} (poruka) i \texttt{RunConfig} (konfiguracija eksperimenta).
-    Ovaj sloj koristi Python \texttt{dataclasses} za efikasno modelovanje nepromenljivih struktura podataka.
+    Ovaj sloj koristi Python \texttt{dataclasses} za modelovanje nepromenljivih struktura podataka. Digitalni potpisi su simulirani korišćenjem \textbf{SHA-256} heš funkcije nad sadržajem poruke u kombinaciji sa jedinstvenim identifikatorom čvora (npr. \texttt{Hash(content + secret + node\_id)}), čime se omogućava verodostojna verifikacija autentičnosti i integriteta podataka bez eksternih kriptografskih biblioteka.
     
     \item \textbf{Sloj poslovne logike (\texttt{nbft/})}:
     Ovaj sloj obuhvata algoritamske module sistema. Klasa NBFTSimulator, formiranje grupa i ponašanje vizantijskih čvorova, detaljno su analizirani u narednom poglavlju.
@@ -185,37 +194,16 @@ Proces formiranja topologije mrežne simulacije odvija se kroz sledeće faze:
     Član grupe koji je najbliži ovoj tački postaje predstavnik (\textit{Representative}).
 \end{enumerate}
 
-Pseudokod ovog postupka prikazan je u Algoritmu \ref{alg:ch}.
 
-\begin{algorithm}
-\caption{Formiranje topologije i izbor lidera (Stride-based)}
-\label{alg:ch}
-\begin{algorithmic}[1]
-\Function{FormGroups}{$Nodes, m, v$}
-    \State $Primary \gets \text{FindClockwiseNearest}(Hash(PrevMaster || v))$
-    \State $RingNodes \gets \text{SortNodesClockwise}(Nodes)$
-    \State $StartIdx \gets v \mod |Nodes|$
-    \State $Ordered \gets \text{Rotate}(RingNodes, StartIdx)$
-    \State $GroupBuckets \gets \text{EmptyMap}(m)$
-    \State
-    \State $i \gets 0$
-    \For{$n \in Ordered$}
-        \If{$n = Primary$} \textbf{Continue} \EndIf
-        \State $GID \gets i \mod m$
-        \State Add $n$ to $GroupBuckets[GID]$
-        \State $i \gets i + 1$
-    \EndFor
-    \State
-    \State $ResultGroups \gets \emptyset$
-    \For{$g \in [0, m-1]$}
-        \State $Target \gets Hash(Primary || v || g)$
-        \State $Rep \gets \text{ClockwiseNearestMember}(GroupBuckets[g], Target)$
-        \State Add $\{g, Rep, GroupBuckets[g]\}$ to $ResultGroups$
-    \EndFor
-    \State \Return $ResultGroups$
-\EndFunction
-\end{algorithmic}
-\end{algorithm}
+\begin{figure*}[htbp]
+    \centering
+    \begin{minipage}{0.8\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n20_m4_b0_real.png}
+        \caption{Vizuelizacija faza NBFT protokola za $n=20, m=4, b=0$. Dijagram prikazuje formirane grupe i sekvencu razmene poruka kroz sve faze konsenzusa.}
+        \label{fig:msg_flow}
+    \end{minipage}
+\end{figure*}
 
 \subsection{Model NBFT algotima}
 Klasa \texttt{NBFTSimulator} (\texttt{nbft\_sim.py}) predstavlja centralnu komponentu sistema koja orkestrira celokupan životni ciklus mrežne simulacije.
@@ -266,26 +254,67 @@ Ovaj pristup omogućava determinističku, ali realističnu simulaciju distribuir
 
 \section{Eksperimentalna analiza}
 
+\begin{figure*}[htbp]
+    \centering
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n30_mvar1.png}
+        \caption{Otpornost na greške ($n=30, m=4$)}
+        \label{fig:n30_fault}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n30_mvar2.png}
+        \caption{Komunikaciono opterećenje ($n=30, m=4$)}
+        \label{fig:n30_comm}
+    \end{subfigure}
+    
+    \vspace{1em}
+    
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n50_m5_bdo3_1.png}
+        \caption{Otpornost na greške ($n=50, m=5$)}
+        \label{fig:n50_fault}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n50_m5_bdo3_2.png}
+        \caption{Komunikaciono opterećenje ($n=50, m=5$)}
+        \label{fig:n50_comm}
+    \end{subfigure}
+    
+    \vspace{1em}
+    
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n100_m10_b20_1.png}
+        \caption{Otpornost na greške ($n=100, m=10$)}
+        \label{fig:n100_fault}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{img/n100_m10_b20_2.png}
+        \caption{Komunikaciono opterećenje ($n=100, m=10$)}
+        \label{fig:n100_comm}
+    \end{subfigure}
+    \caption{Eksperimentalni rezultati: Poređenje PBFT i NBFT algoritama kroz metriku uspešnosti konsenzusa i broja razmenjenih poruka za različite konfiguracije mreže.}
+    \label{fig:experimental_results}
+\end{figure*}
+
 Za potrebe evaluacije performansi i robusnosti NBFT algoritma, sprovedena je serija simulacija korišćenjem razvijene softverske platforme. Eksperimenti su fokusirani na dva ključna aspekta: skalabilnost u pogledu broja poruka i otpornost na vizantijske greške.
 
-\subsection{Postavka eksperimenata}
-Eksperimenti su izvršeni u kontrolisanom asinhronom okruženju. Korišćeni su sledeći parametri:
-\begin{itemize}
-    \item Ukupan broj čvorova $n$: Variran u opsegu od $10$ do $100$.
-    \item Broj grupa $m$: Za NBFT konfiguraciju, $m$ je postavljen na vrednosti $2, 4, 5$.
-    \item Broj vizantijskih čvorova $f$: Variran od $0$ do $n/3$ kako bi se testirale granice otpornosti algoritma.
-\end{itemize}
-Svaka konfiguracija je testirana kroz više nezavisnih ponavljanja (trials) radi statističke značajnosti rezultata.
-
 \subsection{Analiza otpornosti na greške}
-Kroz modul \textbf{Batch Experiments}, generisan je grafik zavisnosti uspešnosti konsenzusa (Success Rate) od broja vizantijskih čvorova.
-Rezultati pokazuju da NBFT održava visoku stopu uspešnosti sve dok je broj kompromitovanih grupa ispod teorijskog praga $w$. 
-Posebno je značajno da mehanizam \textbf{Watchdog} uspešno detektuje "Silent Failure" i "Equivocation" napade predstavnika, inicirajući alarme koji sprečavaju prihvatanje nevalidnih odluka na globalnom nivou.
+Analizom rezultata prikazanih na slikama \ref{fig:n30_fault} i \ref{fig:n50_fault}, uočava se da NBFT algoritam pokazuje izuzetnu robusnost. Za mrežu od $n=30$ čvorova podeljenju u $m=4$ grupe (Slika \ref{fig:n30_fault}), stopa uspešnosti ostaje stabilna čak i kada broj vizantijskih čvorova raste do 14. Ovakav rezultat je omogućen hijerarhijskom podelom gde kvar pojedinih čvorova ne utiče nužno na kvorum ostalih grupa. Naprotiv, PBFT implementacija pokazuje brži pad performansi čim broj grešaka pređe kritičnu granicu $f$. Sličan trend je primetan i kod veće mreže ($n=50$, Slika \ref{fig:n50_fault}), gde NBFT zadržava visoku pouzdanost unutar šireg opsega grešaka.
+
 
 \subsection{Analiza komunikacione složenosti}
-Poređenjem prosečnog broja razmenjenih poruka po jednoj instanci konsenzusa, potvrđene su teorijske pretpostavke o superiornoj skalabilnosti NBFT-a.
-Dok referentna PBFT implementacija pokazuje eksponencijalni rast saobraćaja ($O(n^2)$), NBFT demonstrira linearnu zavisnost ($O(n)$) zahvaljujući hijerarhijskoj redukciji.
-Ovo smanjenje je vizuelno potvrđeno i kroz generisane \textit{Message Sequence Chart} dijagrame, gde je evidentna manja gustina poruka u međugrupnoj komunikaciji u poređenju sa potpunom "all-to-all" komunikacijom kod PBFT-a.
+Rezultati merenja mrežnog saobraćaja, prikazani na slikama \ref{fig:n30_comm} i \ref{fig:n50_comm}, jasno demonstriraju prednost NBFT-a u skalabilnosti. Dok PBFT generiše veliki broj poruka koji raste kvadratno sa brojem čvorova, NBFT zadržava linearnu tendenciju sa značajno manjim brojem razmenjenih paketa. 
+
+Kod konfiguracije $n=30$ (Slika \ref{fig:n30_comm}), razlika u broju poruka je višestruka u korist NBFT algoritma. Sa daljim porastom mreže na $n=50$ čvorova (Slika \ref{fig:n50_comm}), ova diskrepanca postaje još drastičnija, potvrđujući da NBFT efektivno redukuje mrežnu saturaciju. Ovo smanjenje je vizuelno potvrđeno i kroz generisane \textit{Message Sequence Chart} dijagrame (poput Slike \ref{fig:msg_flow}), gde je vidljiva znatno manja gustina poruka u poređenju sa potpunom "all-to-all" komunikacijom kod PBFT-a.
 
 \subsection{Ograničenja PBFT implementacije}
 Važno je napomenuti da, dok NBFT implementacija sadrži napredne mehanizme oporavka (View Change) i kriptografsku zaštitu, korišćena referentna implementacija PBFT algoritma predstavlja pojednostavljenu verziju.
@@ -294,17 +323,22 @@ Ova simplifikacija je namerna kako bi se izolovao uticaj komunikacione složenos
 
 \section{Zaključak}
 
-U ovom radu prezentovana je sveobuhvatna analiza i implementacija NBFT algoritma kao rešenja za inherentne probleme skalabilnosti klasičnog PBFT protokola.
-Kroz razvoj modularne simulacione platforme, uspešno su verifikovane teorijske pretpostavke o linearnoj komunikacionoj složenosti ($O(n)$) hijerarhijskog pristupa.
+U ovom radu prezentovana je sveobuhvatna analiza i implementacija NBFT algoritma kao rešenja za inherentne probleme skalabilnosti klasičnog PBFT protokola. 
+Kroz razvoj simulacione platforme, uspešno su verifikovane teorijske pretpostavke o linearnoj komunikacionoj složenosti ($O(n)$) hijerarhijskog pristupa inspirisanog konvolutivnim sažimanjem.
 
-Ključni doprinosi rada ogledaju se u:
+Glavni doprinosi rada potvrdili su da NBFT značajno unapređuje:
 \begin{enumerate}
-    \item \textbf{Praktičnoj validaciji}: Eksperimentalni rezultati nedvosmisleno potvrđuju da grupisanje čvorova drastično smanjuje opterećenje mreže bez degradacije otpornosti na greške, pod uslovom da je broj kompromitovanih grupa ograničen.
-    \item \textbf{Robustnosti dizajna}: Implementirani mehanizmi zaštite, poput Watchdog nadzora i ponderisanog glasanja, pokazali su se efikasnim u neutralisanju sofisticiranih vizantijskih napada na nivou predstavnika.
-    \item \textbf{Otvorenoj platformi}: Razvijeni softverski okvir, sa svojim intuitivnim grafičkim interfejsom i detaljnom vizuelizacijom, predstavlja vredan alat za dalja istraživanja u domenu distribuiranih algoritama.
+    \item \textbf{Preventivnu zaštitu}: Skrivanje uloga čvorova putem konzistentnog heširanja efikasno neutrališe napade na lidere grupa pre početka konsenzusa.
+    \item \textbf{Robusne sigurnosne modele}: Implementacija \textit{Node Decision Broadcast} i \textit{Threshold Vote-Counting} modela omogućava očuvanje integriteta odluka čak i uz drastičnu redukciju broja poruka.
+    \item \textbf{Superiornu fault-tolerance granicu}: Eksperimentalna i teorijska analiza potvrđuju da NBFT može održati konsenzus čak i kada procenat vizantijskih čvorova u mreži pređe klasični PBFT limit od $1/3$, zahvaljujući pametnoj distribuciji poverenja kroz grupe.
 \end{enumerate}
 
-Dobijeni rezultati sugerišu da je NBFT vijabilna alternativa za primenu u privatnim blokčejn mrežama i industrijskim IoT sistemima gde su performanse i skalabilnost od primarnog značaja. Budući rad može se fokusirati na optimizaciju procesa rekonfiguracije grupa i analizu ponašanja sistema u dinamičkim mrežnim uslovima sa visokom stopom otkaza čvorova.
+Dobijeni rezultati sugerišu da je NBFT, prateći principe demokratizacije blockchain-a, izuzetno pogodan za primenu u specifičnim scenarijima gde je potreban visok stepen propusnosti i niska latencija. Neki od ključnih scenarija primene uključuju:
+\begin{itemize}
+    \item \textbf{Privatni i konzorcijumski blockchain sistemi}: Unutar korporativnih mreža gde su čvorovi već grupisani po sektorima ili organizacijama, NBFT prirodno mapira hijerarhiju na topologiju grupa.
+    \item \textbf{IoT (Internet of Things) mrežni sistemi}: NBFT omogućava skaliranje kvas-decentralizovanih mreža senzora i aktuatora, gde lokalni gateway-i mogu delovati kao predstavnici grupa, smanjujući globalno opterećenje jezgra mreže.
+    \item \textbf{Međubankarske transakcije i Supply Chain}: U sistemima gde se poverenje gradi unutar lokalnih klastera (npr. regionalne banke ili lokalni dobavljači), NBFT omogućava efikasna poravnanja uz minimalni mrežni overhead.
+\end{itemize}
 
 
 \begin{thebibliography}{1}

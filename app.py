@@ -13,7 +13,7 @@ repo = Repository()
 
 def plot_nbft_trace(trace, n, m, algo="NBFT"):
     """
-    Generates a sequence diagram matching Figure 1 of the paper.
+    Generates a sequence diagram matching Figure from the paper.
     """
     if not trace: 
         return None
@@ -22,9 +22,6 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
     fig, ax = plt.subplots(figsize=(14, height))
     
     # Setup Y-axis (Nodes)
-    # Highlight Reps. We need to identify them. 
-    # Since we don't have the simulator object here, we infer from trace or re-calculate.
-    # Re-calculating consistent hash groupings locally for visualization context.
     from nbft.models import Node
     from nbft.consistent_hash import ConsistentHashing
     
@@ -34,8 +31,6 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
     reps = {g.representative_id for g in groups}
     global_primary = ch.get_global_primary(0)
     
-    # Sort nodes by Group ID for better visualization
-    # We want Group 0 nodes at the top, then Group 1, etc.
     nodes_by_group = {}
     for g in groups:
         nodes_by_group[g.group_id] = sorted(g.members)
@@ -48,7 +43,6 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
     y_pos_map = {node_id: idx for idx, node_id in enumerate(sorted_node_list)}
     
     # Sort messages by Phase then Time
-    # Phase Order based on Paper Terminology
     phase_order = {
         "PBFT_PRE_PREPARE": 0,
         "PBFT_PREPARE": 1,
@@ -282,7 +276,7 @@ with gr.Blocks(title="NBFT Simulator") as demo:
         ### Overview of Consensus Protocols
         *   **Distributed Systems**: A network of autonomous computers that communicate to achieve a common goal. Use consensus algorithms to agree on data values.
         *   **PBFT (Practical Byzantine Fault Tolerance)**: A robust consensus algorithm that tolerates up to *f* malicious (Byzantine) nodes in a network of *3f+1* nodes. Ideally secure but suffers from O(n²) complexity, limiting scalability.
-        *   **NBFT (Node-grouped BFT)**: An optimized algorithm that partitions the network into groups. It uses a two-level consensus mechanism (Intra-group & Inter-group) to reduce complexity to approx O(n), enabling better scalability for large networks.
+        *   **NBFT **: An optimized algorithm that partitions the network into groups. It uses a two-level consensus mechanism (Intra-group & Inter-group) to reduce complexity to approx O(n), enabling better scalability for large networks.
         """
     )
     

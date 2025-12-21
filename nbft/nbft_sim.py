@@ -21,6 +21,8 @@ class NBFTSimulator:
         
         self.nodes = self._setup_nodes()
         self.ch = ConsistentHashing(self.nodes, config.m)
+        self.previous_hash = "0" * 64
+        self.prev_primary_id = None
         # Form Groups & Identify Reps for View 0
         self._setup_view(0)
         
@@ -59,7 +61,9 @@ class NBFTSimulator:
         Configures groups, representatives, and primary for a specific view.
         """
         # Form Groups
-        self.groups, self.node_group_map = self.ch.form_groups(view_id)
+        self.groups, self.node_group_map, self.global_primary_id = self.ch.form_groups(
+            view_id, self.previous_hash, self.prev_primary_id
+        )
         
         # Identify Reps
         self.reps = set()
@@ -72,8 +76,8 @@ class NBFTSimulator:
             self.nodes[g.representative_id].is_group_representative = True
             self.reps.add(g.representative_id)
             
-        self.global_primary_id = self.ch.get_global_primary(view_id)
         self.nodes[self.global_primary_id].is_global_primary = True
+        self.prev_primary_id = self.global_primary_id  # Store for next view setup if needed
         self.log(f"View {view_id} Setup: Primary={self.global_primary_id}, Reps={self.reps}")
 
     def _apply_byzantine_strategies(self):
@@ -268,17 +272,21 @@ class NBFTSimulator:
         elif msg.msg_type == MsgType.PREPREPARE1:
             st["proposal_value"] = msg.content
             
-            # Every node (including node 0 once it has the message) sends in-prepare1 to its group representative
-            rep_id = self.groups[self.node_group_map[node.node_id]].representative_id
-            self.log(f"[preprepare1] Received broadcast. Sending in-prepare1 to Rep {rep_id}", source=f"node-{node.node_id}")
-            in_prep1 = Message(MsgType.IN_PREPARE1, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
-            self.send(node, rep_id, in_prep1)
-            
-            # Algorithm 1: Watchdog Timer
-            # Start a watchdog to wait for in-prepare2 from the Representative
-            watchdog_task = asyncio.create_task(self._watchdog_timer(node, msg, rep_id))
-            self.background_tasks.add(watchdog_task)
-            watchdog_task.add_done_callback(self.background_tasks.discard)
+            # Every node (if in a group) sends in-prepare1 to its group representative
+            gid = self.node_group_map.get(node.node_id, -1)
+            if gid != -1:
+                rep_id = self.groups[gid].representative_id
+                self.log(f"[preprepare1] Received broadcast. Sending in-prepare1 to Rep {rep_id}", source=f"node-{node.node_id}")
+                in_prep1 = Message(MsgType.IN_PREPARE1, node.node_id, msg.view, msg.sequence_number, msg.digest, content=msg.content)
+                self.send(node, rep_id, in_prep1)
+                
+                # Algorithm 1: Watchdog Timer
+                # Start a watchdog to wait for in-prepare2 from the Representative
+                watchdog_task = asyncio.create_task(self._watchdog_timer(node, msg, rep_id))
+                self.background_tasks.add(watchdog_task)
+                watchdog_task.add_done_callback(self.background_tasks.discard)
+            else:
+                self.log(f"[preprepare1] Global Primary {node.node_id} skipping intra-group step.", source=f"node-{node.node_id}")
 
         # 2. in-prepare1 (Node -> Representative)
         elif msg.msg_type == MsgType.IN_PREPARE1:

@@ -1,123 +1,134 @@
 import hashlib
-import struct
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from .models import Node, Group
+
+def sha32(data: bytes) -> int:
+    """First 32 bits of SHA-256 as an integer."""
+    return int.from_bytes(hashlib.sha256(data).digest()[:4], "big")
+
+RING_SIZE = 2**32
 
 class ConsistentHashing:
     """
-    Implements the Consistent Hashing and Grouping logic
-    
-    - The ID space is a ring [0, 2^32 - 1].
-    - Nodes are mapped to points on the ring.
-    - Groups are formed by partitioning the ring or the sorted node list.
+    Matches the paper, but replaces:
+      - nodeip with a stable string id (e.g. f"node_{node_id}")
+      - masterip with the previous primary's stable string id
+
+    Logic:
+      pos(node) = hash(nodeip)
+      primary = clockwise nearest to hash(masterip + previoushash + viewnumber)
+      start = round(viewnumber / nodenumber)
+      walk clockwise, skip primary, every m nodes -> one group
+      rep(group) = clockwise nearest (within group) to hash(masterip + viewnumber + groupnumber)
+      R = floor((n-1)/m)
     """
 
-    def __init__(self, nodes: List[Node], m_groups: int):
+    def __init__(self, nodes: List[Node], group_size_m: int):
+        if group_size_m <= 0:
+            raise ValueError("group_size_m must be > 0")
         self.nodes = nodes
-        self.m = m_groups
-        self.ring_max = 2**32
-        
-        # Sort nodes by ID for deterministic grouping
-        self.sorted_nodes = sorted(nodes, key=lambda n: n.node_id)
+        self.m = group_size_m              # paper: nodes per group
         self.n = len(nodes)
 
-    def get_global_primary(self, view_number: int) -> int:
-        """
-        hash(masterip + viewnumber) -> Clockwise nearest node.
-        Track 'masterip' as the primary of the previous consensus round (or node 0)
-        """
-        # For simulation, we simplify 'masterip' to the primary of view v-1
-        # or just node 0 for the first view.
-        if view_number == 0:
-            prev_primary = 0
-        else:
-            prev_primary = (view_number - 1) % self.n
-            
-        h_input = f"{prev_primary}_{view_number}".encode()
-        target_pos = int.from_bytes(hashlib.sha256(h_input).digest()[:4], "big")
-        
-        # Consistent Hashing: find clockwise nearest node
-        node_positions = []
-        for node in self.nodes:
-            h = hashlib.sha256(f"node_{node.node_id}".encode()).digest()
-            pos = int.from_bytes(h[:4], "big")
-            node_positions.append((pos, node.node_id))
-        
-        node_positions.sort()
-        
-        for pos, n_id in node_positions:
-            if pos >= target_pos:
-                return n_id
-        return node_positions[0][1] # Wrap around
+        # Stable id string that replaces "nodeip"
+        self.node_key: Dict[int, str] = {nd.node_id: f"node_{nd.node_id}" for nd in nodes}
 
-    def form_groups(self, view_number: int) -> Tuple[List[Group], Dict[int, int]]:
-        """
-        Partitions nodes using the stride/skip logic:
-        1. Sort nodes clockwise on ring.
-        2. Identify Global Primary.
-        3. Starting from [view/n], skip primary, assign nodes round-robin (every m).
-        """
-        # 1. Map and Sort Nodes
-        node_positions = []
-        for node in self.nodes:
-            h = hashlib.sha256(f"node_{node.node_id}".encode()).digest()
-            pos = int.from_bytes(h[:4], "big")
-            node_positions.append((pos, node))
-        node_positions.sort()
-        
-        primary_id = self.get_global_primary(view_number)
-        
-        # 2. Extract nodes in order, starting from offset [view/n]
-        start_idx = view_number % self.n
-        ordered_nodes = [node_positions[(start_idx + i) % self.n][1] for i in range(self.n)]
-        
-        # 3. Filter out Primary and assign to m groups
-        group_buckets = {g_id: [] for g_id in range(self.m)}
-        node_group_map = {}
-        
-        non_primary_nodes = [n for n in ordered_nodes if n.node_id != primary_id]
-        
-        for i, node in enumerate(non_primary_nodes):
-            g_id = i % self.m # "Every m nodes to a consensus group" logic
-            group_buckets[g_id].append(node)
-            node_group_map[node.node_id] = g_id
-        
-        # Primary also needs a group for intra-group protocol consistency 
-        node_group_map[primary_id] = 0 # Default primary to group 0
-        if primary_id not in [n.node_id for n in group_buckets[0]]:
-            primary_node = next(n for n in self.nodes if n.node_id == primary_id)
-            group_buckets[0].append(primary_node)
+        # Precompute ring positions
+        self.pos_by_id: Dict[int, int] = {
+            nd.node_id: sha32(self.node_key[nd.node_id].encode())
+            for nd in nodes
+        }
 
-        # 4. Select Representatives based on hash(primary + view + group_id)
-        groups = []
-        for g_id in range(self.m):
-            members = group_buckets[g_id]
-            member_ids = [n.node_id for n in members]
-            
-            # Select Representative
-            rep_h_input = f"{primary_id}_{view_number}_{g_id}".encode()
-            rep_target = int.from_bytes(hashlib.sha256(rep_h_input).digest()[:4], "big")
-            
-            best_rep_id = member_ids[0]
-            min_dist = 2**32
-            
-            for node in members:
-                # Get node's ring pos
-                h = hashlib.sha256(f"node_{node.node_id}".encode()).digest()
-                pos = int.from_bytes(h[:4], "big")
-                dist = (pos - rep_target) % (2**32)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_rep_id = node.node_id
-            
-            groups.append(Group(
-                group_id=g_id,
-                representative_id=best_rep_id,
-                members=member_ids
-            ))
-            
-        return groups, node_group_map
+        # Clockwise order
+        self.clockwise_nodes: List[Node] = sorted(nodes, key=lambda nd: self.pos_by_id[nd.node_id])
 
     def get_R(self) -> int:
-        """Paper formula R = floor((n-1)/m)"""
-        return (self.n - 1) // self.m if self.m > 0 else 0
+        """R = ceil((n-1)/m), groups contain all non-primary nodes."""
+        if self.n <= 1:
+            return 0
+        return ((self.n - 1) + self.m - 1) // self.m  # integer ceil
+
+    def _clockwise_nearest(self, target_pos: int, candidates: List[Node]) -> int:
+        """Return candidate node_id whose ring pos is nearest clockwise from target_pos."""
+        ordered = sorted(candidates, key=lambda nd: self.pos_by_id[nd.node_id])
+        for nd in ordered:
+            if self.pos_by_id[nd.node_id] >= target_pos:
+                return nd.node_id
+        return ordered[0].node_id  # wrap-around
+
+    def get_global_primary(
+        self,
+        view_number: int,
+        previoushash: str = "0"*64,
+        prev_primary_id: Optional[int] = None,
+    ) -> int:
+        """
+        Primary is clockwise nearest to hash(masterip + previoushash + viewnumber),
+        where masterip is the previous round primary "ip".
+        Simulate masterip with self.node_key[prev_primary_id]
+
+        If prev_primary_id is None (first round), pick the first node clockwise as primary
+        """
+        if prev_primary_id is None:
+            return self.clockwise_nodes[0].node_id
+
+        masterip_sim = self.node_key[prev_primary_id]  # replaces "masterip"
+        h_in = f"{masterip_sim}{previoushash}{view_number}".encode()
+        target = sha32(h_in)
+        return self._clockwise_nearest(target, self.clockwise_nodes)
+
+    def form_groups(
+        self,
+        view_number: int,
+        previoushash: str = "0"*64,
+        prev_primary_id: Optional[int] = None,
+    ) -> Tuple[List[Group], Dict[int, int], int]:
+        """
+        Returns (groups, node_group_map, global_primary_id)
+
+        Grouping logic:
+          start index = round(viewnumber/nodenumber)
+          walk clockwise, skip primary, every m nodes -> group
+        """
+        primary_id = self.get_global_primary(view_number, previoushash, prev_primary_id)
+
+        # Start from [viewnumber/nodenumber] (rounded)
+        start_idx = int(round(view_number / max(self.n, 1))) % self.n
+
+        ordered = [self.clockwise_nodes[(start_idx + i) % self.n] for i in range(self.n)]
+        non_primary = [nd for nd in ordered if nd.node_id != primary_id]  # skip primary
+
+        R = self.get_R()
+        groups: List[Group] = []
+        node_group_map: Dict[int, int] = {primary_id: -1}  # primary excluded from groups
+
+        # Contiguous chunks of size m. Ensure ALL non-primary nodes are assigned.
+        for g_id in range(R):
+            # If it's the last group, take all remaining nodes
+            #if g_id == R - 1:
+            #    chunk = non_primary[g_id * self.m :]
+            #else:
+            #    chunk = non_primary[g_id * self.m : (g_id + 1) * self.m]
+            chunk = non_primary[g_id * self.m : (g_id + 1) * self.m]  # <= m members always
+            if not chunk:
+                break  # safety, shouldn't happen with correct R
+            member_ids = [nd.node_id for nd in chunk]
+            for nid in member_ids:
+                node_group_map[nid] = g_id
+
+            # Representative: hash(masterip + viewnumber + groupnumber)
+            if prev_primary_id is None:
+                masterip_sim = self.node_key[primary_id]
+            else:
+                masterip_sim = self.node_key[prev_primary_id]
+
+            rep_target = sha32(f"{masterip_sim}{view_number}{g_id}".encode())
+            rep_id = self._clockwise_nearest(rep_target, chunk) if chunk else -1
+
+            groups.append(Group(
+                group_id=g_id,
+                representative_id=rep_id,
+                members=member_ids
+            ))
+
+        return groups, node_group_map, primary_id

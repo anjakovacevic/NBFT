@@ -18,8 +18,8 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
     if not trace: 
         return None
         
-    height = max(10, n * 0.6)
-    fig, ax = plt.subplots(figsize=(14, height))
+    height = max(7, n * 0.5)
+    fig, ax = plt.subplots(figsize=(10, height))
     
     # Setup Y-axis (Nodes)
     from nbft.models import Node
@@ -27,17 +27,18 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
     
     temp_nodes = [Node(i, "") for i in range(n)]
     ch = ConsistentHashing(temp_nodes, m)
-    groups, node_group_map = ch.form_groups(0)
+    groups, node_group_map, global_primary = ch.form_groups(0)
     reps = {g.representative_id for g in groups}
-    global_primary = ch.get_global_primary(0)
     
-    nodes_by_group = {}
+    nodes_by_group = {-1: [global_primary]}
     for g in groups:
         nodes_by_group[g.group_id] = sorted(g.members)
         
     sorted_node_list = []
-    for gid in sorted(nodes_by_group.keys()):
-        sorted_node_list.extend(nodes_by_group[gid])
+    # Sort groups so that -1 (Primary) comes last, putting it at the top of the Y-axis
+    for gid in sorted(nodes_by_group.keys(), key=lambda x: 9999 if x == -1 else x):
+        group_members = [m for m in nodes_by_group[gid] if gid == -1 or m != global_primary]
+        sorted_node_list.extend(group_members)
         
     # Map real node ID to Y-axis position (index in sorted list)
     y_pos_map = {node_id: idx for idx, node_id in enumerate(sorted_node_list)}
@@ -192,9 +193,14 @@ def plot_nbft_trace(trace, n, m, algo="NBFT"):
 
     # Add Legend for message types (Only show present types)
     from matplotlib.lines import Line2D
-    present_types = set(m['type'] for m in trace)
-    legend_elements = [Line2D([0], [0], color=c, lw=2, label=t) for t, c in type_colors.items() if t in present_types]
-    ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1), fontsize='small', title='Message Phases')
+    present_types = sorted(list(set(m['type'] for m in trace)), key=lambda t: phase_order.get(t, 99))
+    legend_elements = [Line2D([0], [0], color=type_colors.get(t, 'gray'), lw=2, label=t) for t in present_types]
+    
+    # Move legend to below the plot with multiple columns
+    ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.2), 
+              ncol=min(4, len(legend_elements)), fontsize='small', title='Message Phases')
+    
+    plt.tight_layout()
 
     return fig
     

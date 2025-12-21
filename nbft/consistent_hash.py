@@ -7,7 +7,6 @@ class ConsistentHashing:
     """
     Implements the Consistent Hashing and Grouping logic
     
-    The paper simplifies standard consistent hashing:
     - The ID space is a ring [0, 2^32 - 1].
     - Nodes are mapped to points on the ring.
     - Groups are formed by partitioning the ring or the sorted node list.
@@ -18,16 +17,14 @@ class ConsistentHashing:
         self.m = m_groups
         self.ring_max = 2**32
         
-        # Sort nodes by ID for deterministic grouping (simplified from real hashing for educational clarity)
-        # In a real impl, we would use hash(node.public_key), but the paper implies 
-        # a logical structure for easy reproduction.
+        # Sort nodes by ID for deterministic grouping
         self.sorted_nodes = sorted(nodes, key=lambda n: n.node_id)
         self.n = len(nodes)
 
     def get_global_primary(self, view_number: int) -> int:
         """
-        Paper: hash(masterip + viewnumber) -> Clockwise nearest node.
-        We track 'masterip' as the primary of the previous consensus round (or node 0).
+        hash(masterip + viewnumber) -> Clockwise nearest node.
+        Track 'masterip' as the primary of the previous consensus round (or node 0)
         """
         # For simulation, we simplify 'masterip' to the primary of view v-1
         # or just node 0 for the first view.
@@ -55,7 +52,7 @@ class ConsistentHashing:
 
     def form_groups(self, view_number: int) -> Tuple[List[Group], Dict[int, int]]:
         """
-        Partitions nodes using the stride/skip logic from the paper:
+        Partitions nodes using the stride/skip logic:
         1. Sort nodes clockwise on ring.
         2. Identify Global Primary.
         3. Starting from [view/n], skip primary, assign nodes round-robin (every m).
@@ -74,7 +71,7 @@ class ConsistentHashing:
         start_idx = view_number % self.n
         ordered_nodes = [node_positions[(start_idx + i) % self.n][1] for i in range(self.n)]
         
-        # 3. Filter out Primary and assign to m groups round-robin
+        # 3. Filter out Primary and assign to m groups
         group_buckets = {g_id: [] for g_id in range(self.m)}
         node_group_map = {}
         
@@ -86,7 +83,6 @@ class ConsistentHashing:
             node_group_map[node.node_id] = g_id
         
         # Primary also needs a group for intra-group protocol consistency 
-        # (Though Node 0 often has special logic, we put it in the map)
         node_group_map[primary_id] = 0 # Default primary to group 0
         if primary_id not in [n.node_id for n in group_buckets[0]]:
             primary_node = next(n for n in self.nodes if n.node_id == primary_id)
@@ -124,9 +120,4 @@ class ConsistentHashing:
 
     def get_R(self) -> int:
         """Paper formula R = floor((n-1)/m)"""
-        # Note: The formula assumes the primary is excluded from the groups or handled separately?
-        # Actually, standard PBFT n=3f+1. NBFT uses m groups.
-        # If we just partition n nodes, R = n/m.
-        # The paper formula `R = floor((n-1)/m)` specifically likely excludes the global primary.
-        # We will follow the paper formula for the Analysis class, but use real sizes for Simulation.
         return (self.n - 1) // self.m if self.m > 0 else 0

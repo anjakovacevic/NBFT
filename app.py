@@ -276,7 +276,7 @@ with gr.Blocks(title="NBFT Simulator") as demo:
         ### Overview of Consensus Protocols
         *   **Distributed Systems**: A network of autonomous computers that communicate to achieve a common goal. Use consensus algorithms to agree on data values.
         *   **PBFT (Practical Byzantine Fault Tolerance)**: A robust consensus algorithm that tolerates up to *f* malicious (Byzantine) nodes in a network of *3f+1* nodes. Ideally secure but suffers from O(n²) complexity, limiting scalability.
-        *   **NBFT **: An optimized algorithm that partitions the network into groups. It uses a two-level consensus mechanism (Intra-group & Inter-group) to reduce complexity to approx O(n), enabling better scalability for large networks.
+        *   **NBFT**: An optimized algorithm that partitions the network into groups. It uses a two-level consensus mechanism (Intra-group & Inter-group) to reduce complexity to approx O(n), enabling better scalability for large networks.
         """
     )
     

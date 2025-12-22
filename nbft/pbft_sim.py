@@ -7,8 +7,8 @@ from .byzantine import ByzantineBehavior
 
 class PBFTSimulator:
     """
-    Step 5: PBFT Baseline Simulator.
-    simplified implementation of practical byzantine fault tolerance.
+    PBFT Baseline Simulator
+    simplified implementation of practical byzantine fault tolerance algorithm
     """
     def __init__(self, config: RunConfig):
         self.config = config
@@ -29,8 +29,7 @@ class PBFTSimulator:
     def _setup_nodes(self) -> List[Node]:
         nodes = []
         import random
-        # Randomly select Byzantine nodes to allow the Primary (Node 0) to be faulty.
-        # This highlights PBFT's vulnerability to leader failure (without view change).
+        # Randomly select Byzantine nodes to allow the Primary to be faulty.
         byz_indices = set(random.sample(range(self.config.n), self.config.actual_byzantine))
         
         for i in range(self.config.n):

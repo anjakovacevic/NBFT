@@ -7,8 +7,8 @@ from db.repository import Repository
 
 class ExperimentRunner:
     """
-    Experiment Runner.
-    Orchestrates batch simulations to compare PBFT and NBFT results.
+    Experiment Runner
+    Orchestrates batch simulations to compare PBFT and NBFT results
     """
     
     def __init__(self):
@@ -29,8 +29,8 @@ class ExperimentRunner:
 
     async def run_batch_byzantine_sweep(self, n: int, m: int, max_f: int, trials: int = 5):
         """
-        Sweeps byzantine count from 0 to max_f.
-        Reproduces Success Rate vs Byzantine Nodes plots.
+        Sweeps byzantine count from 0 to max_f
+        Reproduces Success Rate vs Byzantine Nodes plots
         """
         results = []
         
@@ -65,7 +65,7 @@ class ExperimentRunner:
 
     async def run_complexity_analysis(self, n_range: List[int], m: int):
         """
-        Compares O(n^2) vs O(m^2) message complexity.
+        Compares message complexity
         """
         results = []
         for n in n_range:
